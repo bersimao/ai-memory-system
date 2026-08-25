@@ -47,7 +47,10 @@ cd ai-memory-system
 ```
 
 The installer copies the files into `~/.claude/`, registers the hooks in
-`settings.json`, and runs the self-checks. It is safe to re-run: it adds only
+`settings.json`, appends the agent instructions to your `~/.claude/CLAUDE.md`
+(asking first, with a backup), and runs the self-checks. Use `--yes` to accept
+the instructions non-interactively; without a terminal it skips them rather than
+blocking. It is safe to re-run: it adds only
 hooks that are missing, never duplicates them, never drops hooks you already
 had, and backs `settings.json` up before touching it. If that file exists but
 isn't valid JSON it refuses outright rather than overwriting your config.
@@ -65,6 +68,16 @@ python3 ~/.claude/cron/split-memory.test.py  # split safety
 
 Start a session in any git repo. The store is created on first use at
 `~/.claude/projects/<encoded-repo-root>/context/`.
+
+### The instructions are not optional
+
+The hooks and cron jobs move files around. What makes an agent actually *write*
+memory, respect the caps, split instead of compress, and search before saying
+"I don't know" is `docs/memory-instructions.md`, appended to your global
+instructions file. Skip it and you get transcript capture and daily logs, but the
+curated layer stays empty — the system logs, it does not remember.
+
+`skills/memory-write/` handles "remember this" routing and installs alongside.
 
 There is no installer yet — the copy above is the install.
 

@@ -30,10 +30,10 @@ echo "[$(date -Iseconds)] mem-review: ${n}/${THRESHOLD} searches logged" >>"$LOG
 [ "$n" -lt "$THRESHOLD" ] && exit 0
 
 # Dedup guard — one open alert at a time. Marker substring is unique to this
-# check (check-hooks.sh dedups on "ALERTA memória-hooks", check-caps.sh on
-# "ALERTA memória-cap"); do not reuse either.
-msg="📊 REVISAR memória-recall: ${n} buscas reais registradas — rodar \`~/.claude/scripts/mem report\` e decidir (a) limiar de miss, (b) fontes nunca abertas, (c) mudar formato das entradas."
-if [ -f "$INBOX" ] && ! grep -qF "REVISAR memória-recall:" "$INBOX"; then
+# check (check-hooks.sh dedups on "MEMORY-HOOKS ALERT", check-caps.sh on
+# "MEMORY-CAP ALERT"); do not reuse either.
+msg="📊 MEMORY-RECALL REVIEW: ${n} real searches logged — run \`~/.claude/scripts/mem report\` and decide (a) the miss threshold, (b) sources never opened, (c) whether entry format should change."
+if [ -f "$INBOX" ] && ! grep -qF "MEMORY-RECALL REVIEW:" "$INBOX"; then
   printf -- '- [ ] %s\n' "$msg" >>"$INBOX"
   echo "[$(date -Iseconds)] mem-review: alert raised" >>"$LOG"
 fi

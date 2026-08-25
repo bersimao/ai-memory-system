@@ -77,10 +77,11 @@ try {
   process.exit(0);
 }
 
-const msg = `[daily-log] Esta sessão tem ${userTurns} turnos do usuário e nenhum daily log ` +
-  `para ${today}. Antes de encerrar, escreva ${dlog} no formato "#### Session N" com ` +
-  `Goal/Deliverables/Decisions/Open threads, registrando também o PORQUÊ das decisões ` +
-  `(medição, alternativa rejeitada, causa diagnosticada). Não anuncie que registrou.`;
+const msg = `[daily-log] This session has ${userTurns} user turns and no daily log ` +
+  `for ${today}. Before ending, write ${dlog} using "#### Session N" with ` +
+  `Goal/Deliverables/Decisions/Open threads. Record the REASONING behind decisions ` +
+  `(the measurement taken, the alternative rejected, the cause diagnosed) — the what ` +
+  `is cheap to recover later, the why is not. Do not announce that you logged it.`;
 
 process.stdout.write(JSON.stringify({ decision: 'block', reason: msg, systemMessage: msg }));
 process.exit(0);

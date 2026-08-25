@@ -65,4 +65,45 @@ dup=$(grep -o 'memory-inject' "$h/.claude/settings.json" | wc -l)
 [ "$dup" = 1 ] && ok "hook ja registrado por caminho absoluto nao duplica" \
   || bad "memory-inject registrado ${dup}x"
 
+# 7 — REGRESSION: the instructions must actually land. Without them the system
+# captures transcripts but never writes memory — half-alive, and silently so.
+h="$tmp/f"; mkdir -p "$h"
+CLAUDE_HOME="$h/.claude" "$SUT" --yes >/dev/null 2>&1
+g="$h/.claude/CLAUDE.md"
+if [ -f "$g" ] && grep -q 'search before denying' "$g" \
+   && [ -f "$h/.claude/skills/memory-write/SKILL.md" ]; then
+  ok "--yes instala instrucoes e skill memory-write"
+else
+  bad "instrucoes/skill nao chegaram no install"
+fi
+
+# 8 — appending twice must not duplicate them.
+CLAUDE_HOME="$h/.claude" "$SUT" --yes >/dev/null 2>&1
+n=$(grep -c 'memory-system:instructions' "$g")
+[ "$n" = 2 ] && ok "reinstalar nao duplica as instrucoes" \
+  || bad "instrucoes duplicadas (${n} marcadores, esperado 2)"
+
+# 9 — an existing CLAUDE.md must survive, with a backup.
+h="$tmp/g"; mkdir -p "$h/.claude"
+printf '# meu\nnao pode sumir\n' > "$h/.claude/CLAUDE.md"
+CLAUDE_HOME="$h/.claude" "$SUT" --yes >/dev/null 2>&1
+if grep -q 'nao pode sumir' "$h/.claude/CLAUDE.md" \
+   && [ -f "$h/.claude/CLAUDE.md.bak-preinstall" ]; then
+  ok "CLAUDE.md existente preservado, com backup"
+else
+  bad "install destruiu CLAUDE.md do usuario"
+fi
+
+# 10 — REGRESSION: without a terminal the installer must SKIP, never block.
+# It first used `read </dev/tty`, then a bare `read`, which hung forever when
+# stdin was an open-but-empty pipe -- and an installer that hangs is
+# indistinguishable from one that crashed.
+h="$tmp/h"; mkdir -p "$h"
+out=$(timeout 90 env CLAUDE_HOME="$h/.claude" "$SUT" </dev/null 2>&1); rc=$?
+if [ $rc -ne 124 ] && [ ! -f "$h/.claude/CLAUDE.md" ] && grep -q 'non-interactive' <<<"$out"; then
+  ok "sem tty: pula sem travar e diz como obter"
+else
+  bad "sem tty o install travou ou escreveu mesmo assim (rc=$rc)"
+fi
+
 [ $fails -eq 0 ] && { echo PASS; exit 0; } || { echo "FAIL ($fails)"; exit 1; }

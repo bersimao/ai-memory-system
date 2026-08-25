@@ -47,12 +47,12 @@ printf '%s' "$over" >>"$LOG"
 # Surface where the user actually looks: the Obsidian INBOX (swept daily).
 # Dedup guard — one open alert at a time, no daily spam.
 #
-# The marker must NOT contain "ALERTA memória-hooks": check-hooks.sh dedups on that
+# The marker must NOT contain "MEMORY-HOOKS ALERT": check-hooks.sh dedups on that
 # substring, so sharing it would let a cap alert suppress the (more severe)
 # hooks-missing alert.
 count=$(printf '%s' "$over" | grep -c .)
-msg="⚠️ ALERTA memória-cap: ${count} arquivo(s) acima do cap — curate não dá conta sozinho, consolidar ou quebrar em notas-índice. Detalhes em ~/.memsearch/cron.log"
-if [ -f "$INBOX" ] && ! grep -qF "ALERTA memória-cap:" "$INBOX"; then
+msg="⚠️ MEMORY-CAP ALERT: ${count} file(s) over cap — curate alone will not fix this; consolidate or split into topic pages. Details in ~/.memsearch/cron.log"
+if [ -f "$INBOX" ] && ! grep -qF "MEMORY-CAP ALERT:" "$INBOX"; then
   printf -- '- [ ] %s\n' "$msg" >>"$INBOX"
 fi
 exit 1

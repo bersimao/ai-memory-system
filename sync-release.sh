@@ -42,6 +42,9 @@ MANIFEST=(
   scripts/llm-run
 )
 
+# Arquivos nativos do repo (nao vem de ~/.claude) que o guard tambem varre.
+EXTRA_SCAN=(docs/memory-instructions.md skills/memory-write/SKILL.md)
+
 mode="${1:---check}"
 rc=0
 
@@ -83,8 +86,8 @@ if [ "$mode" = --from-home ]; then
   # Scan the ENTIRE release surface, this script included — not just the code
   # dirs. README and the example configs ship too, and can leak just as well.
   scan=()
-  for rel in "${MANIFEST[@]}" sync-release.sh sync-release.test.sh install.sh \
-             install.test.sh README.md CLAUDE.md settings.example.json \
+  for rel in "${MANIFEST[@]}" "${EXTRA_SCAN[@]}" sync-release.sh sync-release.test.sh \
+             install.sh install.test.sh README.md CLAUDE.md settings.example.json \
              data/memory.env.example .gitignore; do
     [ -f "$DST/$rel" ] && scan+=("$DST/$rel")
   done

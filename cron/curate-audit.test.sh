@@ -51,24 +51,24 @@ fi
 grep -q 'diff ' <<<"$OUT" || { echo "FAIL alerta do veto nao traz o comando de diff"; fail=1; }
 # aceitar tem que CONSUMIR o artefato, senão o comando nao e idempotente:
 # aceite -> memoria editada -> mesmo cp de novo apaga as edicoes novas.
-grep -q 'aceitar: cp .* && rm ' <<<"$OUT" \
+grep -q 'accept: cp .* && rm ' <<<"$OUT" \
   && echo "ok   aceitar consome o .rejected (cp && rm)" \
   || { echo "FAIL aceitar nao remove o .rejected"; fail=1; }
 
 mk shrink10 1000 900;  OUT="$(audit_and_veto)"; check "corte 10%% = ok"        "ok shrink10"   900  "$f"
-mk shrink35 1000 650;  OUT="$(audit_and_veto)"; check "corte 35%% = alerta"    "corte grande"  650  "$f"
-mk shrink60 1000 400;  OUT="$(audit_and_veto)"; check "corte 60%% = VETO"      "VETO curate"   1000 "$f"
-mk emptied  1000 0;    OUT="$(audit_and_veto)"; check "esvaziado = VETO"       "VETO curate"   1000 "$f"
+mk shrink35 1000 650;  OUT="$(audit_and_veto)"; check "corte 35%% = alerta"    "large cut in curate"  650  "$f"
+mk shrink60 1000 400;  OUT="$(audit_and_veto)"; check "corte 60%% = VETO"      "CURATE VETO"   1000 "$f"
+mk emptied  1000 0;    OUT="$(audit_and_veto)"; check "esvaziado = VETO"       "CURATE VETO"   1000 "$f"
 mk grew     1000 1500; OUT="$(audit_and_veto)"; check "cresceu = ok"           "ok grew"       1500 "$f"
 
 # limite exato: 50% deve vetar (>=), 49% não
-mk exact50  1000 500;  OUT="$(audit_and_veto)"; check "corte 50%% = VETO"      "VETO curate"   1000 "$f"
-mk under50  1000 510;  OUT="$(audit_and_veto)"; check "corte 49%% = so alerta" "corte grande"  510  "$f"
+mk exact50  1000 500;  OUT="$(audit_and_veto)"; check "corte 50%% = VETO"      "CURATE VETO"   1000 "$f"
+mk under50  1000 510;  OUT="$(audit_and_veto)"; check "corte 49%% = so alerta" "large cut in curate"  510  "$f"
 
 # o veto num arquivo acima do cap tem que mandar QUEBRAR, não comprimir —
 # senão curate corta / veto restaura / nada melhora, toda semana.
 mk bloated 7600 2500 2500; OUT="$(audit_and_veto)"
-grep -q 'QUEBRAR em topics/' <<<"$OUT" \
+grep -q 'SPLIT into topics/' <<<"$OUT" \
   && echo "ok   veto acima do cap sugere quebrar em topics/" \
   || { echo "FAIL veto acima do cap nao sugeriu quebrar"; fail=1; }
 # o global NÃO tem topics/ — a dica lá tem que mandar rotear para skill via kb
@@ -76,16 +76,16 @@ gf="$T/global-MEMORY.md"
 head -c 6000 /dev/zero | tr '\0' 'a' >"$gf"; cp -p "$gf" "$gf.bak"
 head -c 2000 /dev/zero | tr '\0' 'b' >"$gf"
 SIZES="6000|4000|$gf|global"; OUT="$(audit_and_veto)"
-grep -q 'skill dono via' <<<"$OUT" \
-  && echo "ok   veto no global sugere rotear via kb" \
-  || { echo "FAIL veto no global nao sugeriu kb"; fail=1; }
-grep -q 'QUEBRAR em topics/' <<<"$OUT" \
+grep -q 'belongs somewhere else' <<<"$OUT" \
+  && echo "ok   veto no global manda rotear para fora, nao comprimir" \
+  || { echo "FAIL veto no global nao deu a saida certa"; fail=1; }
+grep -q 'SPLIT into topics/' <<<"$OUT" \
   && { echo "FAIL veto no global sugeriu topics/ (nao existe la)"; fail=1; } \
   || echo "ok   veto no global NAO sugere topics/"
 
 # e um veto DENTRO do cap não deve poluir com a dica
 mk small 2000 800 2500; OUT="$(audit_and_veto)"
-grep -q 'QUEBRAR em topics/' <<<"$OUT" \
+grep -q 'SPLIT into topics/' <<<"$OUT" \
   && { echo "FAIL veto dentro do cap nao devia sugerir quebrar"; fail=1; } \
   || echo "ok   veto dentro do cap nao sugere quebrar"
 
@@ -96,7 +96,7 @@ mk deleted 3000 1 2500; rm -f "$f"
 OUT="$(audit_and_veto 2>&1)"
 grep -q 'cannot stat' <<<"$OUT" && { echo "FAIL veto com arquivo apagado ainda tenta copiar"; fail=1; } \
   || echo "ok   veto com arquivo apagado nao tenta copiar"
-grep -q 'proposta era APAGAR' <<<"$OUT" \
+grep -q 'proposal was to DELETE' <<<"$OUT" \
   && echo "ok   alerta explica que a proposta era exclusao" \
   || { echo "FAIL alerta nao explica a exclusao"; fail=1; }
 [ -f "$f" ] && echo "ok   arquivo apagado foi restaurado" || { echo "FAIL nao restaurou"; fail=1; }

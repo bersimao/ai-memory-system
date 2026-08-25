@@ -11,7 +11,14 @@ set -uo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
 DEST="${CLAUDE_HOME:-$HOME/.claude}"
 DRY=0
-[ "${1:-}" = "--dry-run" ] && DRY=1
+ASSUME_YES=0
+for a in "$@"; do
+  case "$a" in
+    --dry-run) DRY=1 ;;
+    --yes|-y)  ASSUME_YES=1 ;;   # non-interactive: append the instructions too
+    *) echo "usage: $0 [--dry-run] [--yes]" >&2; exit 2 ;;
+  esac
+done
 say() { printf '%s\n' "$*"; }
 run() { [ $DRY -eq 1 ] && say "  [dry-run] $*" || eval "$*"; }
 
@@ -21,18 +28,23 @@ for dep in node python3 git; do
   command -v "$dep" >/dev/null 2>&1 || missing="$missing $dep"
 done
 if [ -n "$missing" ]; then
-  say "FALTA:$missing"
-  say "node roda os hooks, python3 os scripts de cron, git ancora o store por repo."
+  say "MISSING:$missing"
+  say "node runs the hooks, python3 runs the cron scripts, git anchors the per-repo store."
   exit 1
 fi
-say "dependencias ok: node $(node -v), python3 $(python3 -V 2>&1 | cut -d' ' -f2)"
+say "dependencies ok: node $(node -v), python3 $(python3 -V 2>&1 | cut -d' ' -f2)"
 
 # --- files ---------------------------------------------------------------
 say
-say "instalando em $DEST"
+say "installing into $DEST"
 for d in hooks cron scripts data; do
   run "mkdir -p '$DEST/$d'"
 done
+if [ -d "$SRC/skills/memory-write" ]; then
+  run "mkdir -p '$DEST/skills/memory-write'"
+  run "cp -p '$SRC/skills/memory-write/SKILL.md' '$DEST/skills/memory-write/SKILL.md'"
+  say "  skills/memory-write/SKILL.md"
+fi
 for d in hooks cron scripts; do
   for f in "$SRC/$d"/*; do
     [ -f "$f" ] || continue
@@ -46,10 +58,10 @@ done
 
 # --- settings.json -------------------------------------------------------
 say
-say "registrando os hooks em $DEST/settings.json"
+say "registering hooks in $DEST/settings.json"
 merge_rc=0
 if [ $DRY -eq 1 ]; then
-  say "  [dry-run] merge de settings.example.json (só o que faltar)"
+  say "  [dry-run] merge settings.example.json (only what is missing)"
 else
   python3 - "$SRC/settings.example.json" "$DEST/settings.json" <<'PY'
 import json, os, sys, shutil, tempfile
@@ -98,7 +110,49 @@ PY
   merge_rc=$?
   # Falha aqui e a pior de todas: sem os hooks registrados nada dispara, e o
   # usuario fica achando que instalou. Nunca dizer "pronto" por cima disso.
-  [ $merge_rc -ne 0 ] && say "  merge de settings.json FALHOU — nenhum hook foi registrado"
+  [ $merge_rc -ne 0 ] && say "  settings.json merge FAILED — no hooks were registered"
+fi
+
+# --- instructions --------------------------------------------------------
+# Sem isto o sistema fica meio vivo: os hooks injetam e capturam, mas nada diz
+# ao agente para ESCREVER memória, respeitar os caps ou buscar antes de negar.
+say
+GUIDE="$DEST/CLAUDE.md"
+MARK="<!-- memory-system:instructions -->"
+if [ $DRY -eq 1 ]; then
+  say "  [dry-run] append memory instructions to $GUIDE"
+elif [ -f "$GUIDE" ] && grep -qF "$MARK" "$GUIDE"; then
+  say "instructions already present in $GUIDE"
+else
+  say "The agent also needs the instructions that make it USE this system"
+  say "(layers, caps, split-don't-compress, the retrieval ladder)."
+  if [ $ASSUME_YES -eq 1 ]; then
+    answer=y
+  elif [ -t 0 ]; then
+    say "Append them to $GUIDE now? A backup is kept. [y/N]"
+    read -r answer || answer=n
+  else
+    # No terminal (CI, pipeline, called from another script). NEVER block on a
+    # read that can never be answered — an installer that hangs looks exactly
+    # like an installer that crashed. Skip, and say how to get it anyway.
+    answer=n
+    say "  (non-interactive: skipping. Re-run with --yes to append them.)"
+  fi
+  case "$answer" in
+    [yY]*)
+      [ -f "$GUIDE" ] && cp -p "$GUIDE" "$GUIDE.bak-preinstall"
+      {
+        printf '\n%s\n' "$MARK"
+        sed '1,/^---$/d' "$SRC/docs/memory-instructions.md"
+        printf '%s\n' "<!-- /memory-system:instructions -->"
+      } >>"$GUIDE"
+      say "  appended to $GUIDE (backup: $GUIDE.bak-preinstall)"
+      ;;
+    *)
+      say "  skipped. Paste docs/memory-instructions.md into $GUIDE when ready —"
+      say "  without it the system captures transcripts but never writes memory."
+      ;;
+  esac
 fi
 
 # --- verify --------------------------------------------------------------
@@ -110,16 +164,16 @@ for t in "node $DEST/hooks/project-store.test.js" \
          "python3 $DEST/cron/split-memory.test.py"; do
   name="$(basename "${t##* }")"
   if [ $DRY -eq 1 ]; then say "  [dry-run] $name"; continue; fi
-  if $t >/dev/null 2>&1; then say "  ok   $name"; else say "  FALHOU $name"; rc=1; fi
+  if $t >/dev/null 2>&1; then say "  ok   $name"; else say "  FAILED $name"; rc=1; fi
 done
 
 say
 if [ $rc -eq 0 ]; then
-  say "pronto. Abra uma sessao do Claude Code em qualquer repo git —"
-  say "o store nasce em $DEST/projects/<repo>/context/ no primeiro uso."
-  say "Config opcional (caminho de INBOX): $DEST/data/memory.env"
+  say "done. Open a Claude Code session in any git repo —"
+  say "the store is created at $DEST/projects/<repo>/context/ on first use."
+  say "Optional config (INBOX path): $DEST/data/memory.env"
 else
-  say "instalacao INCOMPLETA — veja o erro acima. Os hooks podem nao estar"
-  say "registrados, e sem eles nada do sistema de memoria roda."
+  say "installation INCOMPLETE — see the error above. The hooks may not be"
+  say "registered, and without them nothing in the memory system runs."
 fi
 exit $rc

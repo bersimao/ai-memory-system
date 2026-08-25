@@ -19,12 +19,12 @@ done
 
 [ -z "$missing" ] && exit 0
 
-msg="⚠️ ALERTA memória-hooks: hook(s)$missing fora do settings.json — memória não será injetada/capturada. Reregistrar!"
+msg="⚠️ MEMORY-HOOKS ALERT: hook(s)$missing missing from settings.json — memory will not be injected or captured. Re-register them."
 echo "[$(date -Iseconds)] $msg" >>"$LOG"
 
 # Surface where the user actually looks: the Obsidian INBOX (swept daily).
 # Dedup guard — one open alert at a time, no daily spam.
-if [ -f "$INBOX" ] && ! grep -qF "ALERTA memória-hooks:" "$INBOX"; then
+if [ -f "$INBOX" ] && ! grep -qF "MEMORY-HOOKS ALERT:" "$INBOX"; then
   printf -- '- [ ] %s\n' "$msg" >>"$INBOX"
 fi
 exit 1
