@@ -1,0 +1,18 @@
+context/transcripts/
+.memsearch/
+.obsidian/
+
+# Local install config — never versioned
+data/memory.env
+__pycache__/
+*.pyc
+
+# Config local do Claude Code — permissoes por maquina, nunca versionar
+.claude/settings.local.json
+personal_assistence/
+
+# Plugin caveman (terceiro, MIT, JuliusBrussee/caveman) — instalado localmente,
+# nao faz parte deste projeto e nao e redistribuido aqui.
+.agents/
+.claude/skills/
+skills-lock.json

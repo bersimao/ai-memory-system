@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"$HOME/.claude/hooks/memory-inject.js\"", "timeout": 5 },
+          { "type": "command", "command": "node \"$HOME/.claude/hooks/capture-maintenance.js\"", "async": true }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"$HOME/.claude/hooks/transcript-capture.js\"" },
+          { "type": "command", "command": "node \"$HOME/.claude/hooks/daily-log-nudge.js\"" }
+        ]
+      }
+    ]
+  }
+}

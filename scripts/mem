@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# mem — logged wrapper around memsearch (search / expand) + a review report.
+#
+# Why: retrieval quality can only be judged on REAL queries. Synthetic tests are
+# contaminated — whoever writes the query has usually also seen the target text
+# and leaks its vocabulary. Every search and expand appends one JSONL line to
+# ~/.claude/data/memsearch-usage.jsonl; `mem report` reads it back.
+#
+# The usefulness signal is `expand`: an expand shortly after a search means that
+# search returned something worth opening. No extra discipline required.
+#
+# CLAUDE.md retrieval tiers L1/L2 call this instead of `python3 -m memsearch`.
+set -uo pipefail
+
+# ---- Backend -----------------------------------------------------------------
+# This block IS the backend config: to swap the retrieval engine, edit these two
+# functions and nothing else. Everything below (ranking output, usage logging,
+# `mem report`) is backend-agnostic and must keep working unchanged.
+# Contract: docs/retrieval-interface.md in the memory-system repo
+#   backend_search <query> <k> <collection>  -> JSON on stdout: list (or
+#       {"results":[…]}) of {chunk_hash, score, source, content}
+#   backend_expand <chunk_id>                -> plain text (the full section)
+# Exit non-zero on failure; callers report and stop.
+#
+# <collection> is a LOGICAL name — `curated` (L1) or `transcripts` (L3) — never a
+# storage name. Mapping logical -> backend storage happens here and only here;
+# `memsearch_chunks` / `memsearch_transcripts` are memsearch's names, not the
+# system's. `mem` parses -k/-c itself and never forwards raw flags, so a backend
+# is not required to speak memsearch's CLI.
+backend_search() {
+  local q="$1" k="$2" coll="$3" c
+  case "$coll" in
+    curated)     c=memsearch_chunks ;;
+    transcripts) c=memsearch_transcripts ;;
+    *) echo "mem: bad collection '$coll'" >&2; return 2 ;;
+  esac
+  python3 -m memsearch search "$q" -j -k "$k" -c "$c"
+}
+backend_expand() { exec python3 -m memsearch expand "$1"; }
+# ------------------------------------------------------------------------------
+
+LOG="$HOME/.claude/data/memsearch-usage.jsonl"
+mkdir -p "$(dirname "$LOG")"
+
+log_event() {  # <ev> <query-or-hash> <hits-json> [collection]
+  python3 - "$1" "$2" "$3" "${4:-}" >>"$LOG" <<'PY'
+import json, sys, datetime
+ev, key, hits, coll = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+try:
+    h = json.loads(hits)
+except Exception:
+    h = []
+rec = {"ts": datetime.datetime.now().isoformat(timespec="seconds"),
+       "ev": ev, "key": key, "hits": h}
+# Additive field: lines written before 2026-08-23 have no "coll" and are read
+# as "curated". Baseline for the pendência-2 review stays comparable.
+if coll:
+    rec["coll"] = coll
+print(json.dumps(rec, ensure_ascii=False))
+PY
+}
+
+cmd="${1:-}"
+[ -n "$cmd" ] || { echo "usage: mem search <query> [args] | mem expand <hash> | mem report" >&2; exit 2; }
+shift
+
+case "$cmd" in
+  search)
+    q="${1:?usage: mem search <query>}"; shift
+    # Parse the contractual controls here — never forward raw flags to a backend.
+    # Legacy memsearch collection names stay accepted so CLAUDE.md's L3 line works.
+    k=5; coll=curated
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -k|--top-k) k="${2:?-k needs a value}"; shift 2 ;;
+        -c|--collection)
+          case "${2:?-c needs a value}" in
+            curated|memsearch_chunks)          coll=curated ;;
+            transcripts|memsearch_transcripts) coll=transcripts ;;
+            *) echo "mem: unknown collection '$2' (want curated|transcripts)" >&2; exit 2 ;;
+          esac; shift 2 ;;
+        *) echo "mem: unknown option '$1' (want -k N | -c curated|transcripts)" >&2; exit 2 ;;
+      esac
+    done
+    out="$(backend_search "$q" "$k" "$coll")" || { echo "mem: search failed" >&2; exit 1; }
+    python3 - "$q" "$out" <<'PY'
+import json, sys
+out = sys.argv[2]
+rs = json.loads(out)
+rs = rs if isinstance(rs, list) else rs.get("results", [])
+if not rs:
+    print("(no results)")
+for i, r in enumerate(rs, 1):
+    txt = (r.get("content") or "").replace("\n", " ")[:220]
+    print(f"{i}. [{r.get('score', 0):.4f}] {r.get('chunk_hash')}  {r.get('source')}")
+    print(f"   {txt}")
+PY
+    hits="$(python3 - "$out" <<'PY'
+import json, sys
+rs = json.loads(sys.argv[1])
+rs = rs if isinstance(rs, list) else rs.get("results", [])
+print(json.dumps([{"h": r.get("chunk_hash"), "s": round(float(r.get("score", 0)), 4),
+                   "src": r.get("source")} for r in rs[:5]]))
+PY
+)"
+    log_event search "$q" "$hits" "$coll"
+    ;;
+
+  expand)
+    h="${1:?usage: mem expand <chunk_hash>}"; shift
+    [ $# -eq 0 ] || { echo "mem: expand takes no options" >&2; exit 2; }
+    log_event expand "$h" "[]"
+    backend_expand "$h"
+    ;;
+
+  report)
+    python3 - "$LOG" <<'PY'
+import json, sys, os, datetime, collections
+path = sys.argv[1]
+if not os.path.exists(path):
+    print("no usage log yet — nothing to review."); sys.exit(0)
+ev = [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+S = [e for e in ev if e["ev"] == "search"]
+X = [e for e in ev if e["ev"] == "expand"]
+if not S:
+    print("no searches logged yet."); sys.exit(0)
+
+def ts(e): return datetime.datetime.fromisoformat(e["ts"])
+print(f"searches: {len(S)}   expands: {len(X)}   span: {ts(S[0]).date()} -> {ts(S[-1]).date()}")
+
+# ponytail: 10-min window is a guess, not a measured threshold. Adjust if the
+# report keeps crediting/blaming the wrong searches.
+WINDOW = datetime.timedelta(minutes=10)
+paid = sum(1 for s in S if any(0 <= (ts(x) - ts(s)).total_seconds() <= WINDOW.total_seconds() for x in X))
+print(f"led to an expand (<=10min): {paid}/{len(S)}  ({100*paid//max(len(S),1)}%)")
+
+# A top score at/below the fusion floor means only one retrieval arm matched at
+# all — treat as a probable miss.
+weak = [s for s in S if not s["hits"] or max(h["s"] for h in s["hits"]) <= 0.5]
+print(f"weak/no match (top score <= 0.50): {len(weak)}/{len(S)}")
+if weak:
+    print("\n-- probable misses (rewrite the entry, or the fact is not stored) --")
+    for s in weak[-15:]:
+        print(f"   {s['ts'][:10]}  {s['key']}")
+
+src = collections.Counter(h["src"] for s in S for h in s["hits"])
+print("\n-- most-returned sources --")
+for p, n in src.most_common(10):
+    print(f"   {n:>3}  {p.replace(os.path.expanduser('~'), '~')}")
+
+opened = collections.Counter()
+byhash = {h["h"]: h["src"] for s in S for h in s["hits"]}
+for x in X:
+    if x["key"] in byhash:
+        opened[byhash[x["key"]]] += 1
+if opened:
+    print("\n-- actually opened (expand) --")
+    for p, n in opened.most_common(10):
+        print(f"   {n:>3}  {p.replace(os.path.expanduser('~'), '~')}")
+PY
+    ;;
+
+  *)
+    echo "mem: unknown command '$cmd' (want search|expand|report)" >&2; exit 2 ;;
+esac
