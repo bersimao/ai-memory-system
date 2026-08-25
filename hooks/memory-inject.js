@@ -32,7 +32,7 @@ const localDate = (d) => {
   return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}`;
 };
 
-const { storeDir, demandsFor } = require('./project-store.js');
+const { storeDir, demandsFor, encodeProjectPath } = require('./project-store.js');
 
 const home = os.homedir();
 
@@ -77,26 +77,44 @@ const renameWarning = () => {
   const self = path.basename(path.dirname(ctx));
   let names = [];
   try { names = fs.readdirSync(projects); } catch {}
+  // Two shapes reach here, and name similarity only catches the first:
+  //   1. RENAME  — same project, directory renamed, names stay close.
+  //   2. SIBLING — same project, second repo alongside the first, names
+  //      deliberately DIFFERENT (claude-mem / ai-memory-system scored 66.7%,
+  //      well under the 0.85 bar, so this went undetected on 2026-08-25).
+  // A sibling is detected structurally instead: its store name starts with the
+  // encoded parent directory. No decoding needed — the encoding is lossy, but
+  // it is a prefix, so `~/ai/x` and `~/ai/y` share `-home-<user>-ai-`.
+  const parentPrefix = encodeProjectPath(path.dirname(anchor.dir)) + '-';
   let best = null;
   for (const n of names) {
     if (n === self) continue;
     const c = path.join(projects, n, 'context');
     if (storeIsEmpty(c)) continue;
     const sim = similarity(n, self);
-    if (sim < 0.85 || (best && sim <= best.sim)) continue;
+    const sibling = parentPrefix.length > 1 && n.startsWith(parentPrefix);
+    if ((sim < 0.85 && !sibling) || (best && sim <= best.sim)) continue;
     let last = 0;
     for (const sub of ['MEMORY.md', 'memory', 'transcripts']) {
       try { last = Math.max(last, fs.statSync(path.join(c, sub)).mtimeMs); } catch {}
     }
-    best = { n, sim, last };
+    best = { n, sim, last, sibling };
   }
   if (!best) return '';
-  return 'This project\'s memory store is empty, but a similar store has content:\n' +
+  const how = best.sibling && best.sim < 0.85
+    ? 'a store for a neighbouring directory has content'
+    : 'a similar store has content';
+  return `This project's memory store is empty, but ${how}:\n` +
     `- \`${path.join(projects, best.n)}\`\n` +
     `- similarity ${(best.sim * 100).toFixed(0)}%, last activity ${new Date(best.last).toISOString().slice(0, 10)}\n` +
-    'If the project directory was renamed, that store is this project\'s orphaned memory — ' +
-    'tell the user and offer to merge its context/ into this store. ' +
-    'If this is a genuinely new project that merely resembles another, ignore this.';
+    'If the project directory was RENAMED, that store is this project\'s orphaned memory — ' +
+    'tell the user and offer to merge its context/ into this store.\n' +
+    'If this is a SECOND REPO of the same project (source + published, app + infra), ' +
+    'the two should share one store — tell the user and offer to pin it:\n' +
+    `\`node ~/.claude/hooks/project-store.js --pin <anchor> --for ${anchor.dir}\`\n` +
+    'Never pin without asking: guessing that two directories are one project and ' +
+    'merging their memory is a worse error than leaving them apart. ' +
+    'If this is a genuinely new project that merely sits next door, ignore this.';
 };
 
 

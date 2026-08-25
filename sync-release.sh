@@ -24,6 +24,7 @@ MANIFEST=(
   hooks/daily-log-nudge.js
   hooks/project-store.js
   hooks/project-store.test.js
+  hooks/memory-inject.test.js
   cron/curate.sh
   cron/curate-audit.test.sh
   cron/split-memory.py

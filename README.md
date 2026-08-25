@@ -58,6 +58,7 @@ To verify by hand at any time:
 
 ```bash
 node ~/.claude/hooks/project-store.test.js   # store anchoring
+node ~/.claude/hooks/memory-inject.test.js   # empty-store / sibling-repo warning
 bash ~/.claude/cron/curate-audit.test.sh     # curator veto
 python3 ~/.claude/cron/split-memory.test.py  # split safety
 ```
