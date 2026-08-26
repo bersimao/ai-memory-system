@@ -43,7 +43,7 @@ MANIFEST=(
 )
 
 # Arquivos nativos do repo (nao vem de ~/.claude) que o guard tambem varre.
-EXTRA_SCAN=(docs/memory-instructions.md skills/memory-write/SKILL.md)
+EXTRA_SCAN=(docs/memory-instructions.md docs/codex-support.md skills/memory-write/SKILL.md)
 
 mode="${1:---check}"
 rc=0

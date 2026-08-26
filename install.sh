@@ -74,8 +74,8 @@ if os.path.exists(target_path):
     try:
         target = json.load(open(target_path, encoding='utf-8'))
     except Exception as e:
-        sys.exit(f"settings.json existe mas nao e JSON valido ({e}). "
-                 f"Corrija ou mova antes de instalar — nao vou sobrescrever.")
+        sys.exit(f"settings.json exists but is not valid JSON ({e}). "
+                 f"Fix or move it before installing — I will not overwrite it.")
     shutil.copy2(target_path, target_path + '.bak-preinstall')
 
 hooks = target.setdefault('hooks', {})
@@ -105,7 +105,7 @@ with os.fdopen(fd, 'w', encoding='utf-8') as fh:
     json.dump(target, fh, indent=2, ensure_ascii=False)
     fh.write('\n')
 os.replace(tmp, target_path)
-print(f"  {added} hook(s) adicionado(s); os que ja existiam foram preservados")
+print(f"  {added} hook(s) added; the ones already there were preserved")
 PY
   merge_rc=$?
   # Falha aqui e a pior de todas: sem os hooks registrados nada dispara, e o

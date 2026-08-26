@@ -35,25 +35,105 @@ not a memory system.
 **Escalates retrieval only as far as needed** — injected context, then grep,
 then vector search, then raw transcripts. See `docs/retrieval-interface.md`.
 
-## Install
+## Setup
 
-Requires Node (for the hooks), Python 3 (for the cron scripts), and bash.
+**Before you start**, you need two things:
+
+1. **Claude Code**, already installed and working. If `claude` doesn't run in
+   your terminal yet, install that first — this adds memory *to* Claude Code, it
+   isn't a replacement for it.
+2. **A terminal you can paste into.** On Mac that's Terminal; on Windows use
+   WSL (Ubuntu), because the scheduled maintenance is shell scripts.
+
+You do not need to know what a hook is, edit any config by hand, or understand
+any of the code. If you can copy a line and press Enter, you can install this.
+
+### Step 1 — Download it
+
+Paste this and press Enter:
 
 ```bash
 git clone https://github.com/bersimao/ai-memory-system
 cd ai-memory-system
-./install.sh --dry-run   # see what would change
+```
+
+### Step 2 — Look before you leap (optional but recommended)
+
+```bash
+./install.sh --dry-run
+```
+
+This changes **nothing**. It prints what it *would* do. If the output worries
+you, stop here and nothing has happened.
+
+### Step 3 — Install
+
+```bash
 ./install.sh
 ```
 
-The installer copies the files into `~/.claude/`, registers the hooks in
-`settings.json`, appends the agent instructions to your `~/.claude/CLAUDE.md`
-(asking first, with a backup), and runs the self-checks. Use `--yes` to accept
-the instructions non-interactively; without a terminal it skips them rather than
-blocking. It is safe to re-run: it adds only
-hooks that are missing, never duplicates them, never drops hooks you already
-had, and backs `settings.json` up before touching it. If that file exists but
-isn't valid JSON it refuses outright rather than overwriting your config.
+It will ask one question — whether to add the memory instructions to your Claude
+settings. **Answer `y`.** Without them the system records what you did but never
+remembers it, which is half a system.
+
+It keeps a backup of every file it touches, and re-running it is safe.
+
+### Step 4 — Check it worked
+
+The installer ends with three `ok` lines and the word `done`. If you see that,
+you're finished.
+
+To be certain, go into any project folder that uses git and run:
+
+```bash
+node ~/.claude/hooks/memory-inject.js --cwd .
+```
+
+It prints what Claude will be told at the start of every session in that folder.
+Right after installing it is nearly empty — you should see a heading called
+**Project store anchor** followed by the folder's path. That's the proof it
+found your project. It fills up as you work.
+
+### What happens from here
+
+- **Today** — the memory is empty. That's normal; it has nothing to remember yet.
+- **As you work** — say *"remember this"* about anything worth keeping and it
+  gets written down. Claude also keeps a short daily log on its own.
+- **After a few days** — start a session and Claude already knows the project:
+  what you decided, what broke, what you're in the middle of.
+- **Once a week** — it tidies its own notes, and refuses any edit that would
+  delete too much.
+
+Everything lives in ordinary text files on your own computer, under
+`~/.claude/`. Nothing is uploaded. You can read them, edit them, or delete them
+with any text editor.
+
+### If something goes wrong
+
+| What you see | What it means |
+|---|---|
+| `MISSING: node` or `MISSING: python3` | Install the one it names, then re-run. |
+| `settings.json … is not valid JSON` | You have a broken settings file. It refused to touch it, on purpose — fix or rename that file, then re-run. |
+| `installation INCOMPLETE` | Something above it failed. The message says which. Nothing is half-applied. |
+| Claude doesn't seem to remember anything | The instructions step was skipped. Re-run `./install.sh --yes`. |
+
+To undo everything: delete `~/.claude/hooks/`, `~/.claude/cron/`, and the block
+marked `memory-system:instructions` in `~/.claude/CLAUDE.md`. Your memory files
+in `~/.claude/projects/` stay, and are just text.
+
+---
+
+## Install (the details)
+
+Requires Node (hooks), Python 3 (cron scripts), and bash.
+
+The installer copies files into `~/.claude/`, registers the hooks in
+`settings.json`, appends the agent instructions to `~/.claude/CLAUDE.md` — and to
+`~/.codex/AGENTS.md` if you use Codex — and runs the self-checks. `--yes` accepts
+the instructions non-interactively; with no terminal it skips them rather than
+blocking. Re-running adds only what's missing, never duplicates hooks, never
+drops hooks you already had, and backs up `settings.json` first. If that file
+exists but isn't valid JSON it refuses outright rather than overwriting it.
 
 Optional local config lands at `~/.claude/data/memory.env`.
 
@@ -66,7 +146,7 @@ bash ~/.claude/cron/curate-audit.test.sh     # curator veto
 python3 ~/.claude/cron/split-memory.test.py  # split safety
 ```
 
-Start a session in any git repo. The store is created on first use at
+The store is created on first use at
 `~/.claude/projects/<encoded-repo-root>/context/`.
 
 ### The instructions are not optional
@@ -78,8 +158,6 @@ instructions file. Skip it and you get transcript capture and daily logs, but th
 curated layer stays empty — the system logs, it does not remember.
 
 `skills/memory-write/` handles "remember this" routing and installs alongside.
-
-There is no installer yet — the copy above is the install.
 
 ## Layout
 
@@ -127,6 +205,11 @@ Not yet shared: session-start injection and the daily-log nudge, which are
 Claude Code hooks. Codex hooks are documented but not in the current stable
 release; when they ship, `memory-inject.js --cwd` is already the entry point
 they'd call.
+
+Version specifics, how the anchoring works, and the commands to re-check whether
+hooks have landed: **[`docs/codex-support.md`](docs/codex-support.md)**. That
+detail lives there rather than here because it goes stale with each Codex
+release.
 
 ## What is not here
 
