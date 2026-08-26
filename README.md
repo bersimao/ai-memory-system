@@ -159,6 +159,21 @@ in `~/.claude/projects/` stay, and are just text.
 
 Requires Node (hooks), Python 3 (cron scripts), and bash.
 
+**Optional: the vector search tier.** `scripts/mem` uses
+[memsearch](https://github.com/zilliztech/memsearch), a separate project that is
+not bundled here. Without it everything works except fuzzy search, and `mem`
+tells you so with the command to enable it rather than just failing. To turn it
+on:
+
+```bash
+pip install memsearch
+~/.claude/cron/memsearch-index.sh
+```
+
+It is a seam, not a dependency — `docs/retrieval-interface.md` defines the two
+functions a replacement has to provide. Nothing else in the system knows the
+backend's name.
+
 The installer copies files into `~/.claude/`, registers the hooks in
 `settings.json`, appends the agent instructions to `~/.claude/CLAUDE.md` — and to
 `~/.codex/AGENTS.md` if you use Codex — and runs the self-checks. `--yes` accepts

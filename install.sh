@@ -33,6 +33,14 @@ if [ -n "$missing" ]; then
   exit 1
 fi
 say "dependencies ok: node $(node -v), python3 $(python3 -V 2>&1 | cut -d' ' -f2)"
+# Opcional de proposito. Dizer aqui evita a descoberta pior: instalar, usar por
+# dias, e so entao topar com "search failed" sem saber que faltava um pacote.
+if python3 -c 'import memsearch' >/dev/null 2>&1; then
+  say "optional: memsearch found — vector search tier available"
+else
+  say "optional: memsearch not installed — grep tier works, fuzzy search does not."
+  say "          enable later with: pip install memsearch && ~/.claude/cron/memsearch-index.sh"
+fi
 
 # --- files ---------------------------------------------------------------
 say

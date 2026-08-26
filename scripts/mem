@@ -37,6 +37,26 @@ backend_search() {
   python3 -m memsearch search "$q" -j -k "$k" -c "$c"
 }
 backend_expand() { exec python3 -m memsearch expand "$1"; }
+
+# O tier vetorial e OPCIONAL: sem ele a escada de retrieval ainda responde pelo
+# grep. Mas "mem: search failed" sozinho nao diz isso — o usuario nao tem como
+# adivinhar que memsearch e um pacote a parte, que nao vem neste repo. Falhar
+# sem dizer o que instalar e o mesmo que falhar em silencio.
+backend_missing() {
+  python3 -c 'import memsearch' >/dev/null 2>&1 && return 1
+  cat >&2 <<'EOT'
+mem: the vector backend is not installed, so this tier is unavailable.
+     Nothing is broken — the grep tier of the retrieval ladder still answers,
+     and it is the cheaper tier when you know the keyword.
+
+     To enable this tier:   pip install memsearch
+                            ~/.claude/cron/memsearch-index.sh
+     To use another backend: see docs/retrieval-interface.md — `mem` talks to it
+                            through two functions, nothing else in the system
+                            knows the backend's name.
+EOT
+  return 0
+}
 # ------------------------------------------------------------------------------
 
 LOG="$HOME/.claude/data/memsearch-usage.jsonl"
@@ -82,7 +102,10 @@ case "$cmd" in
         *) echo "mem: unknown option '$1' (want -k N | -c curated|transcripts)" >&2; exit 2 ;;
       esac
     done
-    out="$(backend_search "$q" "$k" "$coll")" || { echo "mem: search failed" >&2; exit 1; }
+    out="$(backend_search "$q" "$k" "$coll")" || {
+        backend_missing || echo "mem: search failed" >&2
+        exit 1
+    }
     python3 - "$q" "$out" <<'PY'
 import json, sys
 out = sys.argv[2]
