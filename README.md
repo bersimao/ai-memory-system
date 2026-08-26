@@ -108,6 +108,26 @@ ships, and its leak guard scans the whole release surface — itself included �
 refusing to copy anything carrying an absolute home path. `sync-release.test.sh`
 covers that guard.
 
+## Claude Code and Codex
+
+The memory is shared, not duplicated. Both CLIs anchor a session to the same
+repo, so a decision recorded while working in one is there when you open the
+other.
+
+- **Instructions** — `install.sh` appends them to `~/.claude/CLAUDE.md` and, if
+  `~/.codex` exists, to `~/.codex/AGENTS.md`.
+- **Transcripts** — `cron/jsonl-to-transcript.py` reads Claude Code's project
+  `.jsonl` *and* Codex's `~/.codex/sessions/**/rollout-*.jsonl`, anchoring the
+  latter on `session_meta.cwd`. A day worked in both lands in **one** transcript,
+  ordered by timestamp.
+- **Store, caps, split, curation, retrieval** — CLI-neutral already; they only
+  touch files.
+
+Not yet shared: session-start injection and the daily-log nudge, which are
+Claude Code hooks. Codex hooks are documented but not in the current stable
+release; when they ship, `memory-inject.js --cwd` is already the entry point
+they'd call.
+
 ## What is not here
 
 - **Domain knowledge.** The skills that use this memory are separate.

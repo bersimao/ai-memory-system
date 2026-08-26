@@ -106,4 +106,24 @@ else
   bad "sem tty o install travou ou escreveu mesmo assim (rc=$rc)"
 fi
 
+# 11 — com ~/.codex presente, as instrucoes vao para CLAUDE.md E AGENTS.md.
+# Claude Code le CLAUDE.md, Codex le AGENTS.md: instalar so num deixa o outro
+# agente com a maquinaria e sem as regras.
+h="$tmp/i"; mkdir -p "$h/.codex"
+printf '# Codex\nregra do usuario\n' > "$h/.codex/AGENTS.md"
+HOME="$h" CLAUDE_HOME="$h/.claude" "$SUT" --yes >/dev/null 2>&1
+a=$(grep -c 'memory-system:instructions' "$h/.claude/CLAUDE.md" 2>/dev/null || echo 0)
+b=$(grep -c 'memory-system:instructions' "$h/.codex/AGENTS.md" 2>/dev/null || echo 0)
+if [ "$a" = 2 ] && [ "$b" = 2 ] && grep -q 'regra do usuario' "$h/.codex/AGENTS.md"; then
+  ok "instala em CLAUDE.md e AGENTS.md, preservando o AGENTS.md do usuario"
+else
+  bad "alvo duplo falhou (CLAUDE.md=$a AGENTS.md=$b)"
+fi
+
+# 12 — sem ~/.codex nao inventa AGENTS.md.
+h="$tmp/j"; mkdir -p "$h"
+HOME="$h" CLAUDE_HOME="$h/.claude" "$SUT" --yes >/dev/null 2>&1
+[ ! -e "$h/.codex" ] && ok "sem ~/.codex nao cria AGENTS.md" \
+  || bad "criou .codex sem o usuario ter Codex"
+
 [ $fails -eq 0 ] && { echo PASS; exit 0; } || { echo "FAIL ($fails)"; exit 1; }

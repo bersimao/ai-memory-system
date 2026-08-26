@@ -19,9 +19,15 @@ that file is exactly what the skip-guard below protects — so this script has
 never written a single day. Transcripts are versioned in git, so a forced run
 is revertible; run it on a clean tree.
 """
-import json, os, glob, sys, datetime, collections
+import json, os, glob, sys, datetime, collections, subprocess
 
 ROOT = os.path.expanduser("~/.claude/projects")
+# Codex grava rollouts em ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl, e o cwd
+# vive no session_meta em vez de no nome do diretorio. Mesmo projeto, mesma
+# memoria: os dois agentes escrevem no MESMO transcript do dia, ordenados por
+# timestamp. Ausente = nada acontece; ninguem precisa ter Codex instalado.
+CODEX_SESSIONS = os.path.expanduser("~/.codex/sessions")
+STORE_RESOLVER = os.path.expanduser("~/.claude/hooks/project-store.js")
 TODAY = datetime.date.today().isoformat()
 # ponytail: flat per-day cap. A day that overflows loses its tail rather than
 # bloating the L3 index; raise if truncation markers start showing up often.
@@ -89,15 +95,112 @@ def collect(project_dir):
     return days
 
 
+_store_cache = {}
+
+
+def resolve_store(cwd):
+    """cwd -> NOME do store (basename), nao caminho absoluto.
+
+    Delega a ancoragem ao project-store.js de proposito: a ordem e
+    pin -> git root -> cwd, e reimplementar isso aqui em Python criaria duas
+    verdades que divergem no primeiro pin.
+
+    Devolve so o basename porque quem chama junta com ROOT. Devolver o caminho
+    absoluto furava o sandbox dos testes (que trocam ROOT por um tmpdir) e
+    fazia o teste escrever em transcript de verdade."""
+    if cwd in _store_cache:
+        return _store_cache[cwd]
+    out = None
+    if os.path.isdir(cwd) and os.path.exists(STORE_RESOLVER):
+        try:
+            r = subprocess.run(["node", STORE_RESOLVER, "--resolve", cwd],
+                               capture_output=True, text=True, timeout=20)
+            for line in r.stdout.splitlines():
+                if line.startswith("store:"):
+                    out = os.path.basename(line.split(":", 1)[1].strip())
+                    break
+        except Exception:
+            out = None
+    _store_cache[cwd] = out
+    return out
+
+
+def collect_codex():
+    """-> {store_dir: {day: [(timestamp, role, text)]}}"""
+    days = collections.defaultdict(lambda: collections.defaultdict(list))
+    if not os.path.isdir(CODEX_SESSIONS):
+        return days
+    for j in glob.glob(os.path.join(CODEX_SESSIONS, "**", "*.jsonl"), recursive=True):
+        cwd, entries = None, []
+        try:
+            fh = open(j, encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                payload = e.get("payload") or {}
+                if e.get("type") == "session_meta":
+                    cwd = payload.get("cwd")
+                    continue
+                # So user_message/agent_message: o resto e telemetria, tool call
+                # e reasoning. Mesmo criterio do lado Claude Code (user+assistant).
+                kind = payload.get("type")
+                if kind == "user_message":
+                    role = "user"
+                elif kind == "agent_message":
+                    role = "assistant"
+                else:
+                    continue
+                text = str(payload.get("message") or "").strip()
+                if not text or text.startswith(NOISE_PREFIXES):
+                    continue
+                ts = e.get("timestamp")
+                if not ts:
+                    continue
+                try:
+                    dt = datetime.datetime.fromisoformat(
+                        ts.replace("Z", "+00:00")).astimezone()
+                except Exception:
+                    continue
+                entries.append((dt, role, text))
+        if not cwd or not entries:
+            continue
+        # Sessao rodada no Windows (cwd "C:\...") nao resolve aqui; resolve_store
+        # devolve None e o dia e ignorado em vez de virar um store de lixo.
+        name = resolve_store(cwd)
+        if not name:
+            continue
+        store = os.path.join(ROOT, name)
+        for dt, role, text in entries:
+            days[store][dt.date().isoformat()].append((dt, role, text))
+    return days
+
+
 def main():
     dry = "--dry-run" in sys.argv
     force = "--force" in sys.argv
     written = skipped = 0
+
+    # Une as duas origens ANTES de escrever. Um dia em que se trabalhou nos dois
+    # agentes vira UM transcript, ordenado por timestamp — nao dois arquivos
+    # concorrendo pelo mesmo nome, nem o segundo sobrescrevendo o primeiro.
+    merged = collections.defaultdict(lambda: collections.defaultdict(list))
     for pd in sorted(glob.glob(os.path.join(ROOT, "*"))):
         if not os.path.isdir(pd):
             continue
+        for day, entries in collect(pd).items():
+            merged[pd][day].extend(entries)
+    for store, by_day in collect_codex().items():
+        for day, entries in by_day.items():
+            merged[store][day].extend(entries)
+
+    for pd in sorted(merged):
         tdir = os.path.join(pd, "context", "transcripts")
-        for day, entries in sorted(collect(pd).items()):
+        for day, entries in sorted(merged[pd].items()):
             if day == TODAY:
                 continue
             dest = os.path.join(tdir, f"{day}.md")
@@ -112,6 +215,9 @@ def main():
                 continue
             entries.sort(key=lambda r: r[0])
             parts, total, cut = ["<!-- auto-extracted from native session jsonl -->"], 0, False
+            # O MARKER (prefixo) tem que continuar identico: a regra de
+            # procedencia em main() depende dele para distinguir extracao
+            # completa de parcial do Stop hook.
             for dt, role, text in entries:
                 chunk = f"\n## {dt.strftime('%H:%M:%S')}\n**{role}:** {text}"
                 if total + len(chunk) > MAX_CHARS:

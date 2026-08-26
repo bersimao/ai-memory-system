@@ -115,41 +115,61 @@ fi
 
 # --- instructions --------------------------------------------------------
 # Sem isto o sistema fica meio vivo: os hooks injetam e capturam, mas nada diz
-# ao agente para ESCREVER memória, respeitar os caps ou buscar antes de negar.
+# ao agente para ESCREVER memoria, respeitar os caps ou buscar antes de negar.
+#
+# Onde o agente le instrucoes depende do CLI: Claude Code usa CLAUDE.md, Codex
+# usa AGENTS.md. Mesmo conteudo, destinos diferentes — instala nos dois quando a
+# maquina tem os dois.
 say
-GUIDE="$DEST/CLAUDE.md"
 MARK="<!-- memory-system:instructions -->"
-if [ $DRY -eq 1 ]; then
-  say "  [dry-run] append memory instructions to $GUIDE"
-elif [ -f "$GUIDE" ] && grep -qF "$MARK" "$GUIDE"; then
-  say "instructions already present in $GUIDE"
+
+GUIDES="$DEST/CLAUDE.md"
+[ -d "$HOME/.codex" ] && GUIDES="$GUIDES $HOME/.codex/AGENTS.md"
+
+append_instructions() {
+  guide="$1"
+  [ -f "$guide" ] && cp -p "$guide" "$guide.bak-preinstall"
+  {
+    printf '\n%s\n' "$MARK"
+    sed '1,/^---$/d' "$SRC/docs/memory-instructions.md"
+    printf '%s\n' "<!-- /memory-system:instructions -->"
+  } >>"$guide"
+  say "  appended to $guide"
+}
+
+pending=""
+for g in $GUIDES; do
+  if [ -f "$g" ] && grep -qF "$MARK" "$g"; then
+    say "instructions already present in $g"
+  else
+    pending="$pending $g"
+  fi
+done
+
+if [ -z "$pending" ]; then
+  :
+elif [ $DRY -eq 1 ]; then
+  for g in $pending; do say "  [dry-run] append memory instructions to $g"; done
 else
   say "The agent also needs the instructions that make it USE this system"
   say "(layers, caps, split-don't-compress, the retrieval ladder)."
+  for g in $pending; do say "  target: $g"; done
   if [ $ASSUME_YES -eq 1 ]; then
     answer=y
   elif [ -t 0 ]; then
-    say "Append them to $GUIDE now? A backup is kept. [y/N]"
+    say "Append them now? A backup is kept. [y/N]"
     read -r answer || answer=n
   else
-    # No terminal (CI, pipeline, called from another script). NEVER block on a
-    # read that can never be answered — an installer that hangs looks exactly
-    # like an installer that crashed. Skip, and say how to get it anyway.
+    # Sem terminal (CI, pipeline, chamado por outro script). NUNCA travar num
+    # read que ninguem pode responder — instalador que trava e indistinguivel de
+    # instalador que quebrou. Pula e diz como obter mesmo assim.
     answer=n
     say "  (non-interactive: skipping. Re-run with --yes to append them.)"
   fi
   case "$answer" in
-    [yY]*)
-      [ -f "$GUIDE" ] && cp -p "$GUIDE" "$GUIDE.bak-preinstall"
-      {
-        printf '\n%s\n' "$MARK"
-        sed '1,/^---$/d' "$SRC/docs/memory-instructions.md"
-        printf '%s\n' "<!-- /memory-system:instructions -->"
-      } >>"$GUIDE"
-      say "  appended to $GUIDE (backup: $GUIDE.bak-preinstall)"
-      ;;
+    [yY]*) for g in $pending; do append_instructions "$g"; done ;;
     *)
-      say "  skipped. Paste docs/memory-instructions.md into $GUIDE when ready —"
+      say "  skipped. Paste docs/memory-instructions.md into the file(s) above —"
       say "  without it the system captures transcripts but never writes memory."
       ;;
   esac
