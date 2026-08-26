@@ -1,17 +1,25 @@
 # ai-memory-system
 
-Persistent, cross-project memory for [Claude Code](https://claude.com/claude-code).
+Persistent, cross-project memory for [Claude Code](https://claude.com/claude-code),
+shared with [Codex](https://learn.chatgpt.com/docs/codex/cli).
 
-Claude Code forgets everything when a session ends. This adds a memory that
-survives — one store per repository, loaded automatically at session start,
-written during work, curated on a schedule, and searchable when the automatic
-load isn't enough.
+Coding agents forget everything when a session ends. This adds a memory that
+survives — one store per repository, written during work, curated on a schedule,
+and searchable when what was loaded isn't enough.
+
+**Claude Code gets all of it**, including the store loaded automatically at the
+start of every session. **Codex shares the same store** — same repo anchoring,
+its sessions captured into the same daily transcript, the same instructions
+installed — but does not yet get the automatic load, because that needs a hook
+Codex hasn't shipped to stable. Details and how to re-check:
+[`docs/codex-support.md`](docs/codex-support.md).
 
 It is markdown files plus a few hooks. No database, no service, no vendor.
 
 ## What it actually does
 
-**Loads context automatically.** A `SessionStart` hook injects ~3,500 tokens:
+**Loads context automatically** (Claude Code). A `SessionStart` hook injects
+~3,500 tokens:
 your profile, cross-project gotchas, this project's memory, and today's log.
 The store is keyed to the repo's git root, so a session started in
 `repo/services/api` gets the same memory as one started in `repo/`.
