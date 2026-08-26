@@ -24,6 +24,13 @@ your profile, cross-project gotchas, this project's memory, and today's log.
 The store is keyed to the repo's git root, so a session started in
 `repo/services/api` gets the same memory as one started in `repo/`.
 
+**Records the work without being asked.** Every session is captured, and a
+daily log — what was done, decided, and why — is written as the work happens. If
+a long session ends without one, the agent is stopped and told to write it. Days
+that were never logged get rebuilt later by distilling the raw transcripts. You
+only speak up to promote something into permanent memory (*"remember this"*);
+the recording itself is not your job.
+
 **Keeps the injected set small on purpose.** Every layer has a character cap
 (1,375 / 4,000 / 2,500). The cap is the whole design: startup context is the
 most expensive tokens you spend, because you pay them in every session whether
@@ -105,8 +112,13 @@ found your project. It fills up as you work.
 ### What happens from here
 
 - **Today** — the memory is empty. That's normal; it has nothing to remember yet.
-- **As you work** — say *"remember this"* about anything worth keeping and it
-  gets written down. Claude also keeps a short daily log on its own.
+- **As you work — automatically, without you doing anything.** Every session is
+  recorded, and Claude keeps a short daily log of what happened and why. The
+  next session starts with that log already loaded. You do not have to ask.
+- **When something is worth keeping for good** — say *"remember this"*. That
+  promotes a fact out of the day's log into the project's permanent memory,
+  where it stays after the log has scrolled by. This is the one part you drive;
+  everything above happens on its own.
 - **After a few days** — start a session and Claude already knows the project:
   what you decided, what broke, what you're in the middle of.
 - **Once a week** — it tidies its own notes, and refuses any edit that would
