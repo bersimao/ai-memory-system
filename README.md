@@ -4,8 +4,12 @@ Persistent, cross-project memory for [Claude Code](https://claude.com/claude-cod
 shared with [Codex](https://learn.chatgpt.com/docs/codex/cli).
 
 Coding agents forget everything when a session ends. This adds a memory that
-survives — one store per repository, written during work, curated on a schedule,
-and searchable when what was loaded isn't enough.
+survives — written during work, curated on a schedule, and searchable when what
+was loaded isn't enough.
+
+Each repository gets its own store, and **that only governs what loads
+automatically**. Search reaches across every project you have ever worked in, so
+you can ask in one repo about something you decided in another.
 
 **Claude Code gets all of it**, including the store loaded automatically at the
 start of every session. **Codex shares the same store** — same repo anchoring,
@@ -48,7 +52,11 @@ and accept by hand. An automated editor that can silently delete your memory is
 not a memory system.
 
 **Escalates retrieval only as far as needed** — injected context, then grep,
-then vector search, then raw transcripts. See `docs/retrieval-interface.md`.
+then vector search, then raw transcripts. Everything from the grep tier onward
+searches **all** stores, not just the current repo: a decision made months ago in
+a different project is one question away. The vector tier is optional and lives
+behind a two-line seam (`scripts/mem`); remove it and grep still answers. See
+`docs/retrieval-interface.md`.
 
 ## Setup
 
@@ -123,6 +131,10 @@ found your project. It fills up as you work.
   what you decided, what broke, what you're in the middle of.
 - **Once a week** — it tidies its own notes, and refuses any edit that would
   delete too much.
+- **Across projects** — each project keeps its own notes, but you can ask about
+  any of them from anywhere. *"How did we solve this at the other client?"*
+  works even from an unrelated folder; it searches everything you have worked
+  on, not just the folder you're sitting in.
 
 Everything lives in ordinary text files on your own computer, under
 `~/.claude/`. Nothing is uploaded. You can read them, edit them, or delete them
