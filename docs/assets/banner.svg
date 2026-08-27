@@ -1,84 +1,131 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-label="ai-memory-system — persistent, cross-project memory for coding agents">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0f172a"/>
-      <stop offset="1" stop-color="#1e293b"/>
-    </linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#38bdf8"/>
-      <stop offset="1" stop-color="#a78bfa"/>
-    </linearGradient>
-  </defs>
-
-  <rect width="1200" height="320" rx="14" fill="url(#bg)"/>
-  <rect x="1" y="1" width="1198" height="318" rx="13" fill="none" stroke="#334155" stroke-width="2"/>
-
-  <!-- ============ left: mark + name ============ -->
-  <!-- memory-layer stack -->
-  <g transform="translate(64,84)">
-    <rect x="0"  y="70" width="120" height="30" rx="8" fill="#1d4ed8" opacity="0.55"/>
-    <rect x="10" y="35" width="100" height="30" rx="8" fill="#0ea5e9" opacity="0.75"/>
-    <rect x="20" y="0"  width="80"  height="30" rx="8" fill="url(#accent)"/>
-    <!-- cap ticks: each layer is capped -->
-    <line x1="130" y1="85" x2="146" y2="85" stroke="#64748b" stroke-width="3" stroke-linecap="round"/>
-    <line x1="120" y1="50" x2="146" y2="50" stroke="#64748b" stroke-width="3" stroke-linecap="round"/>
-    <line x1="110" y1="15" x2="146" y2="15" stroke="#64748b" stroke-width="3" stroke-linecap="round"/>
-    <!-- search glass over the stack -->
-    <g transform="translate(96,58)">
-      <circle cx="0" cy="0" r="26" fill="#0f172a" opacity="0.35"/>
-      <circle cx="0" cy="0" r="26" fill="none" stroke="#e2e8f0" stroke-width="7"/>
-      <line x1="19" y1="19" x2="44" y2="44" stroke="#e2e8f0" stroke-width="9" stroke-linecap="round"/>
-    </g>
-  </g>
-
-  <text x="248" y="140" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="46" font-weight="700" fill="#f1f5f9">ai-memory-system</text>
-  <text x="250" y="180" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="21" fill="#94a3b8">Persistent, cross-project memory for coding agents.</text>
-  <text x="250" y="212" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" fill="#64748b">Markdown files plus a few hooks — no database, no service, no vendor.</text>
-
-  <!-- ============ right: the pipeline ============ -->
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" text-anchor="middle">
-    <!-- session -->
-    <rect x="800" y="52" width="130" height="40" rx="9" fill="#0f172a" stroke="#38bdf8" stroke-width="1.5"/>
-    <text x="865" y="77" fill="#e2e8f0">session</text>
-    <!-- transcript -->
-    <rect x="990" y="52" width="146" height="40" rx="9" fill="#0f172a" stroke="#475569" stroke-width="1.5"/>
-    <text x="1063" y="77" fill="#cbd5e1">transcript</text>
-    <!-- daily log -->
-    <rect x="990" y="132" width="146" height="40" rx="9" fill="#0f172a" stroke="#475569" stroke-width="1.5"/>
-    <text x="1063" y="157" fill="#cbd5e1">daily log</text>
-    <!-- memory -->
-    <rect x="800" y="132" width="130" height="40" rx="9" fill="#0f172a" stroke="#a78bfa" stroke-width="1.5"/>
-    <text x="865" y="157" fill="#e2e8f0">MEMORY.md</text>
-    <!-- curator -->
-    <rect x="800" y="220" width="336" height="42" rx="9" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
-    <text x="968" y="246" fill="#94a3b8">curator — vetoes deletion &#8805;50%</text>
-
-    <!-- arrows -->
-    <g stroke="#64748b" stroke-width="2" fill="none">
-      <path d="M930 72 H984"/>
-      <path d="M984 72 l-8 -5 v10 z" fill="#64748b" stroke="none"/>
-      <path d="M1063 92 V126"/>
-      <path d="M1063 126 l-5 -8 h10 z" fill="#64748b" stroke="none"/>
-      <path d="M990 152 H936"/>
-      <path d="M936 152 l8 -5 v10 z" fill="#64748b" stroke="none"/>
-      <path d="M865 132 V98"/>
-      <path d="M865 98 l-5 8 h10 z" fill="#64748b" stroke="none"/>
-      <path d="M865 172 V214" stroke-dasharray="4 4"/>
-      <path d="M865 214 l-5 -8 h10 z" fill="#64748b" stroke="none"/>
-    </g>
-    <!-- loop label: memory feeds the next session -->
-    <text x="900" y="120" fill="#475569" font-size="12" text-anchor="start">injected at start</text>
-  </g>
-
-  <!-- retrieval ladder strip -->
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14">
-    <text x="250" y="262" fill="#64748b">retrieval:</text>
-    <text x="345" y="262" fill="#38bdf8">context</text>
-    <text x="418" y="262" fill="#475569">&#8594;</text>
-    <text x="443" y="262" fill="#7dd3fc">grep</text>
-    <text x="489" y="262" fill="#475569">&#8594;</text>
-    <text x="514" y="262" fill="#a78bfa">vector</text>
-    <text x="580" y="262" fill="#475569">&#8594;</text>
-    <text x="605" y="262" fill="#c4b5fd">transcripts</text>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-label="ai-memory-system — persistent, cross-project memory for coding agents" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, 'DejaVu Sans', sans-serif">
+<defs>
+<filter id="g" x="-260%" y="-260%" width="620%" height="620%">
+  <feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<filter id="gs" x="-260%" y="-260%" width="620%" height="620%">
+  <feGaussianBlur stdDeviation="11" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<radialGradient id="halo" cx="50%" cy="50%" r="50%">
+  <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.20"/>
+  <stop offset="55%" stop-color="#a78bfa" stop-opacity="0.07"/>
+  <stop offset="100%" stop-color="#a78bfa" stop-opacity="0"/></radialGradient>
+<linearGradient id="mk" x1="0" y1="0" x2="1" y2="1">
+  <stop offset="0%" stop-color="#22d3ee"/><stop offset="100%" stop-color="#a78bfa"/></linearGradient>
+</defs>
+<rect width="1200" height="320" fill="#0a0d13"/>
+<ellipse cx="895.0" cy="160.0" rx="236" ry="152" fill="url(#halo)"/>
+<path d="M870.3 135.0 Q883.2 157.2 905.3 170.2" fill="none" stroke="#22d3ee" stroke-width="2.00" stroke-opacity="0.67" stroke-linecap="round"/>
+<path d="M870.3 135.0 Q885.9 110.4 887.6 81.2" fill="none" stroke="#22d3ee" stroke-width="1.82" stroke-opacity="0.59" stroke-linecap="round"/>
+<path d="M870.3 135.0 Q850.5 157.1 844.0 186.1" fill="none" stroke="#22d3ee" stroke-width="1.93" stroke-opacity="0.64" stroke-linecap="round"/>
+<path d="M905.3 170.2 Q920.6 157.8 927.8 139.5" fill="none" stroke="#22d3ee" stroke-width="1.89" stroke-opacity="0.62" stroke-linecap="round"/>
+<path d="M905.3 170.2 Q913.1 191.1 930.1 205.7" fill="none" stroke="#22d3ee" stroke-width="1.81" stroke-opacity="0.59" stroke-linecap="round"/>
+<path d="M844.0 186.1 Q833.9 165.6 815.2 152.5" fill="none" stroke="#22d3ee" stroke-width="1.76" stroke-opacity="0.57" stroke-linecap="round"/>
+<path d="M844.0 186.1 Q830.2 205.4 827.5 229.0" fill="none" stroke="#22d3ee" stroke-width="1.66" stroke-opacity="0.53" stroke-linecap="round"/>
+<path d="M927.8 139.5 Q949.1 141.5 968.7 132.8" fill="none" stroke="#22d3ee" stroke-width="1.65" stroke-opacity="0.52" stroke-linecap="round"/>
+<path d="M927.8 139.5 Q940.9 121.2 943.3 98.8" fill="none" stroke="#22d3ee" stroke-width="1.67" stroke-opacity="0.53" stroke-linecap="round"/>
+<path d="M815.2 152.5 Q812.9 127.8 798.9 107.3" fill="none" stroke="#60a5fa" stroke-width="1.58" stroke-opacity="0.49" stroke-linecap="round"/>
+<path d="M815.2 152.5 Q790.5 148.3 766.9 156.5" fill="none" stroke="#60a5fa" stroke-width="1.51" stroke-opacity="0.46" stroke-linecap="round"/>
+<path d="M930.1 205.7 Q938.7 232.9 959.6 252.5" fill="none" stroke="#60a5fa" stroke-width="1.43" stroke-opacity="0.43" stroke-linecap="round"/>
+<path d="M930.1 205.7 Q915.4 230.8 914.8 259.9" fill="none" stroke="#60a5fa" stroke-width="1.49" stroke-opacity="0.46" stroke-linecap="round"/>
+<path d="M887.6 81.2 Q909.1 69.0 921.9 47.9" fill="none" stroke="#60a5fa" stroke-width="1.46" stroke-opacity="0.44" stroke-linecap="round"/>
+<path d="M887.6 81.2 Q872.2 57.7 847.3 44.6" fill="none" stroke="#60a5fa" stroke-width="1.46" stroke-opacity="0.44" stroke-linecap="round"/>
+<path d="M943.3 98.8 Q951.6 119.1 968.7 132.8" fill="none" stroke="#60a5fa" stroke-width="1.51" stroke-opacity="0.47" stroke-linecap="round"/>
+<path d="M943.3 98.8 Q968.3 99.2 990.4 87.3" fill="none" stroke="#60a5fa" stroke-width="1.36" stroke-opacity="0.40" stroke-linecap="round"/>
+<path d="M827.5 229.0 Q838.8 250.1 859.0 263.0" fill="none" stroke="#60a5fa" stroke-width="1.42" stroke-opacity="0.43" stroke-linecap="round"/>
+<path d="M827.5 229.0 Q801.4 235.3 781.7 253.6" fill="none" stroke="#60a5fa" stroke-width="1.30" stroke-opacity="0.38" stroke-linecap="round"/>
+<path d="M968.7 132.8 Q985.4 112.9 990.4 87.3" fill="none" stroke="#60a5fa" stroke-width="1.34" stroke-opacity="0.39" stroke-linecap="round"/>
+<path d="M798.9 107.3 Q793.9 88.6 780.5 74.7" fill="none" stroke="#60a5fa" stroke-width="1.33" stroke-opacity="0.39" stroke-linecap="round"/>
+<path d="M798.9 107.3 Q776.5 127.7 766.9 156.5" fill="none" stroke="#60a5fa" stroke-width="1.39" stroke-opacity="0.42" stroke-linecap="round"/>
+<path d="M859.0 263.0 Q887.3 268.7 914.8 259.9" fill="none" stroke="#60a5fa" stroke-width="1.34" stroke-opacity="0.39" stroke-linecap="round"/>
+<path d="M859.0 263.0 Q821.5 248.2 781.7 253.6" fill="none" stroke="#60a5fa" stroke-width="1.23" stroke-opacity="0.35" stroke-linecap="round"/>
+<path d="M914.8 259.9 Q938.2 262.0 959.6 252.5" fill="none" stroke="#60a5fa" stroke-width="1.28" stroke-opacity="0.37" stroke-linecap="round"/>
+<path d="M766.9 156.5 Q747.0 157.1 729.9 167.3" fill="none" stroke="#3b4d66" stroke-width="1.17" stroke-opacity="0.32" stroke-linecap="round"/>
+<path d="M766.9 156.5 Q754.9 183.6 757.6 213.0" fill="none" stroke="#60a5fa" stroke-width="1.23" stroke-opacity="0.35" stroke-linecap="round"/>
+<path d="M921.9 47.9 Q944.3 54.0 966.9 48.5" fill="none" stroke="#60a5fa" stroke-width="1.21" stroke-opacity="0.34" stroke-linecap="round"/>
+<path d="M921.9 47.9 Q926.0 76.2 943.3 98.8" fill="none" stroke="#60a5fa" stroke-width="1.42" stroke-opacity="0.43" stroke-linecap="round"/>
+<path d="M847.3 44.6 Q810.0 51.0 780.5 74.7" fill="none" stroke="#60a5fa" stroke-width="1.25" stroke-opacity="0.36" stroke-linecap="round"/>
+<path d="M847.3 44.6 Q884.2 56.0 921.9 47.9" fill="none" stroke="#60a5fa" stroke-width="1.30" stroke-opacity="0.38" stroke-linecap="round"/>
+<path d="M959.6 252.5 Q992.0 221.0 1004.9 177.7" fill="none" stroke="#60a5fa" stroke-width="1.21" stroke-opacity="0.34" stroke-linecap="round"/>
+<path d="M1004.9 177.7 Q1023.5 170.3 1036.1 154.8" fill="none" stroke="#3b4d66" stroke-width="1.10" stroke-opacity="0.29" stroke-linecap="round"/>
+<path d="M1004.9 177.7 Q992.6 150.6 968.7 132.8" fill="none" stroke="#60a5fa" stroke-width="1.35" stroke-opacity="0.40" stroke-linecap="round"/>
+<path d="M1004.9 177.7 Q1022.9 206.7 1052.7 223.2" fill="none" stroke="#3b4d66" stroke-width="0.98" stroke-opacity="0.25" stroke-linecap="round"/>
+<path d="M780.5 74.7 Q741.2 87.6 713.1 118.0" fill="none" stroke="#3b4d66" stroke-width="1.03" stroke-opacity="0.27" stroke-linecap="round"/>
+<path d="M990.4 87.3 Q983.7 64.8 966.9 48.5" fill="none" stroke="#3b4d66" stroke-width="1.16" stroke-opacity="0.32" stroke-linecap="round"/>
+<path d="M990.4 87.3 Q1016.0 90.2 1039.8 80.3" fill="none" stroke="#3b4d66" stroke-width="1.01" stroke-opacity="0.26" stroke-linecap="round"/>
+<path d="M757.6 213.0 Q764.3 236.4 781.7 253.6" fill="none" stroke="#3b4d66" stroke-width="1.13" stroke-opacity="0.31" stroke-linecap="round"/>
+<path d="M757.6 213.0 Q749.7 186.6 729.9 167.3" fill="none" stroke="#3b4d66" stroke-width="1.08" stroke-opacity="0.29" stroke-linecap="round"/>
+<path d="M966.9 48.5 Q948.6 70.6 943.3 98.8" fill="none" stroke="#60a5fa" stroke-width="1.33" stroke-opacity="0.39" stroke-linecap="round"/>
+<path d="M729.9 167.3 Q727.9 140.5 713.1 118.0" fill="none" stroke="#3b4d66" stroke-width="0.94" stroke-opacity="0.23" stroke-linecap="round"/>
+<path d="M1036.1 154.8 Q1056.3 144.4 1068.9 125.6" fill="none" stroke="#3b4d66" stroke-width="0.84" stroke-opacity="0.19" stroke-linecap="round"/>
+<path d="M1036.1 154.8 Q1053.4 179.0 1080.4 191.7" fill="none" stroke="#3b4d66" stroke-width="0.84" stroke-opacity="0.19" stroke-linecap="round"/>
+<path d="M713.1 118.0 Q735.0 144.2 766.9 156.5" fill="none" stroke="#3b4d66" stroke-width="1.09" stroke-opacity="0.29" stroke-linecap="round"/>
+<path d="M1039.8 80.3 Q1048.5 106.7 1068.9 125.6" fill="none" stroke="#3b4d66" stroke-width="0.76" stroke-opacity="0.16" stroke-linecap="round"/>
+<path d="M1039.8 80.3 Q1028.3 117.0 1036.1 154.8" fill="none" stroke="#3b4d66" stroke-width="0.90" stroke-opacity="0.21" stroke-linecap="round"/>
+<path d="M1052.7 223.2 Q1070.7 211.0 1080.4 191.7" fill="none" stroke="#3b4d66" stroke-width="0.73" stroke-opacity="0.14" stroke-linecap="round"/>
+<path d="M1052.7 223.2 Q1053.3 186.8 1036.1 154.8" fill="none" stroke="#3b4d66" stroke-width="0.87" stroke-opacity="0.20" stroke-linecap="round"/>
+<path d="M1068.9 125.6 Q1066.1 160.1 1080.4 191.7" fill="none" stroke="#3b4d66" stroke-width="0.70" stroke-opacity="0.13" stroke-linecap="round"/>
+<circle cx="870.3" cy="135.0" r="15.9" fill="#22d3ee" opacity="0.11" filter="url(#gs)"/>
+<circle cx="870.3" cy="135.0" r="8.9" fill="#22d3ee" fill-opacity="0.93" filter="url(#g)"/>
+<circle cx="870.3" cy="135.0" r="8.9" fill="none" stroke="#dffaff" stroke-width="1.1" stroke-opacity="0.75"/>
+<circle cx="905.3" cy="170.2" r="15.8" fill="#22d3ee" opacity="0.11" filter="url(#gs)"/>
+<circle cx="905.3" cy="170.2" r="8.8" fill="#22d3ee" fill-opacity="0.91" filter="url(#g)"/>
+<circle cx="905.3" cy="170.2" r="8.8" fill="none" stroke="#dffaff" stroke-width="1.1" stroke-opacity="0.75"/>
+<circle cx="844.0" cy="186.1" r="15.4" fill="#22d3ee" opacity="0.11" filter="url(#gs)"/>
+<circle cx="844.0" cy="186.1" r="8.4" fill="#22d3ee" fill-opacity="0.85" filter="url(#g)"/>
+<circle cx="844.0" cy="186.1" r="8.4" fill="none" stroke="#dffaff" stroke-width="1.1" stroke-opacity="0.75"/>
+<circle cx="927.8" cy="139.5" r="15.3" fill="#22d3ee" opacity="0.11" filter="url(#gs)"/>
+<circle cx="927.8" cy="139.5" r="8.3" fill="#22d3ee" fill-opacity="0.84" filter="url(#g)"/>
+<circle cx="927.8" cy="139.5" r="8.3" fill="none" stroke="#dffaff" stroke-width="1.1" stroke-opacity="0.75"/>
+<circle cx="815.2" cy="152.5" r="15.0" fill="#22d3ee" opacity="0.11" filter="url(#gs)"/>
+<circle cx="815.2" cy="152.5" r="8.0" fill="#22d3ee" fill-opacity="0.80" filter="url(#g)"/>
+<circle cx="815.2" cy="152.5" r="8.0" fill="none" stroke="#dffaff" stroke-width="1.1" stroke-opacity="0.75"/>
+<circle cx="930.1" cy="205.7" r="5.6" fill="#60a5fa" fill-opacity="0.78" filter="url(#g)"/>
+<circle cx="887.6" cy="81.2" r="5.6" fill="#60a5fa" fill-opacity="0.77" filter="url(#g)"/>
+<circle cx="943.3" cy="98.8" r="5.3" fill="#60a5fa" fill-opacity="0.74" filter="url(#g)"/>
+<circle cx="827.5" cy="229.0" r="5.2" fill="#60a5fa" fill-opacity="0.72" filter="url(#g)"/>
+<circle cx="968.7" cy="132.8" r="5.2" fill="#60a5fa" fill-opacity="0.71" filter="url(#g)"/>
+<circle cx="798.9" cy="107.3" r="5.1" fill="#60a5fa" fill-opacity="0.71" filter="url(#g)"/>
+<circle cx="859.0" cy="263.0" r="4.8" fill="#3b4d66" fill-opacity="0.66"/>
+<circle cx="914.8" cy="259.9" r="4.8" fill="#3b4d66" fill-opacity="0.65"/>
+<circle cx="766.9" cy="156.5" r="4.7" fill="#3b4d66" fill-opacity="0.65"/>
+<circle cx="921.9" cy="47.9" r="4.7" fill="#3b4d66" fill-opacity="0.64"/>
+<circle cx="847.3" cy="44.6" r="4.7" fill="#3b4d66" fill-opacity="0.64"/>
+<circle cx="959.6" cy="252.5" r="4.4" fill="#3b4d66" fill-opacity="0.61"/>
+<circle cx="1004.9" cy="177.7" r="4.4" fill="#3b4d66" fill-opacity="0.60"/>
+<circle cx="780.5" cy="74.7" r="4.4" fill="#3b4d66" fill-opacity="0.60"/>
+<circle cx="990.4" cy="87.3" r="4.4" fill="#3b4d66" fill-opacity="0.60"/>
+<circle cx="757.6" cy="213.0" r="4.2" fill="#3b4d66" fill-opacity="0.58"/>
+<circle cx="966.9" cy="48.5" r="4.2" fill="#3b4d66" fill-opacity="0.57"/>
+<circle cx="781.7" cy="253.6" r="4.2" fill="#3b4d66" fill-opacity="0.57"/>
+<circle cx="729.9" cy="167.3" r="3.9" fill="#3b4d66" fill-opacity="0.53"/>
+<circle cx="1036.1" cy="154.8" r="3.8" fill="#3b4d66" fill-opacity="0.51"/>
+<circle cx="713.1" cy="118.0" r="3.5" fill="#3b4d66" fill-opacity="0.47"/>
+<circle cx="1039.8" cy="80.3" r="3.3" fill="#3b4d66" fill-opacity="0.45"/>
+<circle cx="1052.7" cy="223.2" r="3.1" fill="#3b4d66" fill-opacity="0.42"/>
+<circle cx="1068.9" cy="125.6" r="3.0" fill="#3b4d66" fill-opacity="0.40"/>
+<circle cx="1080.4" cy="191.7" r="3.0" fill="#3b4d66" fill-opacity="0.40"/>
+<g transform="translate(62,52)">
+<circle cx="26" cy="26" r="24" fill="none" stroke="url(#mk)" stroke-width="2.4"/>
+<circle cx="26" cy="26" r="8.5" fill="url(#mk)" filter="url(#g)"/>
+<line x1="31.0" y1="17.9" x2="38.5" y2="6.1" stroke="url(#mk)" stroke-width="2" stroke-linecap="round" opacity="0.85"/>
+<circle cx="38.5" cy="6.1" r="3.1" fill="#22d3ee" opacity="0.95"/>
+<line x1="35.3" y1="28.0" x2="49.0" y2="30.9" stroke="url(#mk)" stroke-width="2" stroke-linecap="round" opacity="0.85"/>
+<circle cx="49.0" cy="30.9" r="3.1" fill="#22d3ee" opacity="0.95"/>
+<line x1="27.3" y1="35.4" x2="29.3" y2="49.3" stroke="url(#mk)" stroke-width="2" stroke-linecap="round" opacity="0.85"/>
+<circle cx="29.3" cy="49.3" r="3.1" fill="#22d3ee" opacity="0.95"/>
+<line x1="17.6" y1="30.5" x2="5.3" y2="37.0" stroke="url(#mk)" stroke-width="2" stroke-linecap="round" opacity="0.85"/>
+<circle cx="5.3" cy="37.0" r="3.1" fill="#22d3ee" opacity="0.95"/>
+<line x1="18.9" y1="19.6" x2="8.5" y2="10.3" stroke="url(#mk)" stroke-width="2" stroke-linecap="round" opacity="0.85"/>
+<circle cx="8.5" cy="10.3" r="3.1" fill="#22d3ee" opacity="0.95"/>
+</g>
+<text x="130" y="92" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="40" font-weight="700" fill="#e6edf5" letter-spacing="-0.5">ai-memory-system</text>
+<text x="132" y="127" font-size="17" fill="#8b9bb0">Persistent, cross-project memory for coding agents.</text>
+<text x="132" y="154" font-size="14" fill="#5b6b80">Markdown files plus a few hooks — no service, no vendor, no lock-in.</text>
+<text x="132" y="226" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12.5" fill="#5b6b80" letter-spacing="0.6">retrieval</text>
+<text x="210" y="226" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12.5" fill="#22d3ee">context</text>
+<text x="270" y="226" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12.5" fill="#3b4d66">→</text>
+<text x="292" y="226" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12.5" fill="#60a5fa">grep</text>
+<text x="330" y="226" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12.5" fill="#3b4d66">→</text>
+<text x="352" y="226" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12.5" fill="#a78bfa">vector</text>
+<text x="405" y="226" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12.5" fill="#3b4d66">→</text>
+<text x="427" y="226" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12.5" fill="#f0a4c8">transcripts</text>
 </svg>
