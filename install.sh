@@ -208,16 +208,19 @@ warn_if_no_daemon() {
     say "  start it per boot) so they actually run."
   fi
 }
+# A job only counts as registered if its line is LIVE: uncommented and
+# pointing at this install's script. Matching the marker alone accepted a
+# commented-out (disabled) line, or a stale one from a previous install
+# location, as valid — and maintenance silently never ran.
+job_ok() { # <crontab-content> <job-name>
+  printf '%s\n' "$1" | grep -F "$CRON_MARK:$2" | grep -vE '^[[:space:]]*#' \
+    | grep -qF "$DEST/cron/$2.sh"
+}
 if ! command -v crontab >/dev/null 2>&1; then
   say "crontab not found — schedule these two yourself (cron, anacron, or a systemd timer):"
   say "  daily:  $DEST/cron/distill.sh    (transcripts -> daily logs -> memory, plus the tripwires)"
   say "  weekly: $DEST/cron/curate.sh     (tightens the memory files, with the veto)"
-# Check each job, not just the marker: with a marker-only test, a crontab
-# holding one of the two jobs read as "already registered" and the other job
-# was silently never added — maintenance half-alive, reported as complete.
-elif cur="$(crontab -l 2>/dev/null || true)" \
-     && grep -qF "$CRON_MARK:distill" <<<"$cur" \
-     && grep -qF "$CRON_MARK:curate" <<<"$cur"; then
+elif cur="$(crontab -l 2>/dev/null || true)" && job_ok "$cur" distill && job_ok "$cur" curate; then
   say "cron jobs already registered (see: crontab -l | grep memory-system)"
   warn_if_no_daemon
 else
@@ -239,22 +242,29 @@ else
     case "$answer" in
       [yY]*)
         # Read first, then write: `crontab -l | ... | crontab -` reads and
-        # replaces the same store in one pipeline, which is a race. Add only
-        # the entries that are missing, so a partial registration is completed
-        # rather than duplicated.
-        cur="$(crontab -l 2>/dev/null || true)"
-        { [ -n "$cur" ] && printf '%s\n' "$cur"
-          grep -qF "$CRON_MARK:distill" <<<"$cur" \
-            || echo "15 12 * * * $DEST/cron/distill.sh $CRON_MARK:distill"
-          grep -qF "$CRON_MARK:curate" <<<"$cur" \
-            || echo "45 12 * * 1 $DEST/cron/curate.sh $CRON_MARK:curate"
-        } | crontab - && say "  registered (edit times with crontab -e; remove with: crontab -l | grep -v memory-system | crontab -)" \
+        # replaces the same store in one pipeline, which is a race.
+        # Per job: a LIVE line is kept exactly as the user has it (custom
+        # times survive); a missing, commented-out, or stale-path line is
+        # replaced by a fresh entry. Dead marker lines never accumulate.
+        keep_or_fresh() { # <job-name> <fresh-line>
+          if job_ok "$cur" "$1"; then
+            printf '%s\n' "$cur" | grep -F "$CRON_MARK:$1" \
+              | grep -vE '^[[:space:]]*#' | grep -F "$DEST/cron/$1.sh" | head -1
+          else
+            printf '%s\n' "$2"
+          fi
+        }
+        { printf '%s\n' "$cur" | grep -vF "$CRON_MARK:" || true
+          keep_or_fresh distill "15 12 * * * $DEST/cron/distill.sh $CRON_MARK:distill"
+          keep_or_fresh curate  "45 12 * * 1 $DEST/cron/curate.sh $CRON_MARK:curate"
+        } | grep -vE '^[[:space:]]*$' | crontab - \
+          && say "  registered (edit times with crontab -e; remove with: crontab -l | grep -v memory-system | crontab -)" \
           || { say "  crontab registration FAILED"; cron_rc=1; }
-        # Verify the end state, not the exit code: both jobs must actually be
-        # in the crontab now, or the install is incomplete and must say so.
+        # Verify the end state, not the exit code — with the same LIVE
+        # criterion, so a write that landed disabled or stale still fails.
         after="$(crontab -l 2>/dev/null || true)"
-        if ! grep -qF "$CRON_MARK:distill" <<<"$after" || ! grep -qF "$CRON_MARK:curate" <<<"$after"; then
-          say "  cron entries missing after registration — schedule by hand (see README)"
+        if ! job_ok "$after" distill || ! job_ok "$after" curate; then
+          say "  cron entries not live after registration — schedule by hand (see README)"
           cron_rc=1
         fi
         warn_if_no_daemon

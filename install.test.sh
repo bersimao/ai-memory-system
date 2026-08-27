@@ -188,4 +188,40 @@ else
   bad "partial registration mishandled (distill=$d curate=$c)"
 fi
 
+# 17 — REGRESSION: a commented-out (disabled) job must not count as
+# registered — the marker matched and maintenance silently never ran. On
+# consent it is replaced by a live entry, and the dead line does not pile up.
+printf '#15 12 * * * %s/.claude/cron/distill.sh # memory-system:distill\n' "$h" > "$CT"
+runsut env CLAUDE_HOME="$h/.claude" "$SUT" --yes --cron >/dev/null 2>&1 </dev/null
+live=$(grep -c "^15 12 .*memory-system:distill" "$CT" 2>/dev/null || echo 0)
+dead=$(grep -c '^#15' "$CT" 2>/dev/null); dead=${dead:-0}
+c=$(grep -c 'memory-system:curate' "$CT" 2>/dev/null || echo 0)
+if [ "$live" = 1 ] && [ "$dead" = 0 ] && [ "$c" = 1 ]; then
+  ok "disabled (commented) job is replaced by a live one"
+else
+  bad "commented job read as registered (live=$live dead=$dead curate=$c)"
+fi
+
+# 18 — REGRESSION: a job pointing at a PREVIOUS install location must not
+# count as registered for this one; it is replaced with the current path.
+printf '15 12 * * * /old/claude/cron/distill.sh # memory-system:distill\n' > "$CT"
+runsut env CLAUDE_HOME="$h/.claude" "$SUT" --yes --cron >/dev/null 2>&1 </dev/null
+now=$(grep -c "$h/.claude/cron/distill.sh" "$CT" 2>/dev/null || echo 0)
+old=$(grep -c '/old/claude' "$CT" 2>/dev/null); old=${old:-0}
+if [ "$now" = 1 ] && [ "$old" = 0 ]; then
+  ok "stale-path job is replaced with the current install's path"
+else
+  bad "stale job accepted as valid (current=$now stale=$old)"
+fi
+
+# 19 — a live job with a USER-EDITED time must be kept exactly, while the
+# missing sibling is added.
+printf '0 6 * * * %s/.claude/cron/distill.sh # memory-system:distill\n' "$h" > "$CT"
+runsut env CLAUDE_HOME="$h/.claude" "$SUT" --yes --cron >/dev/null 2>&1 </dev/null
+if grep -q "^0 6 .*memory-system:distill" "$CT" && grep -q 'memory-system:curate' "$CT"; then
+  ok "user-edited time survives; missing sibling is added"
+else
+  bad "re-registration reset the user's custom time"
+fi
+
 [ $fails -eq 0 ] && { echo PASS; exit 0; } || { echo "FAIL ($fails)"; exit 1; }
