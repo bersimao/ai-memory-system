@@ -14,6 +14,13 @@ REPO="$HOME/.claude"
   echo
   echo "=== [$(date -Iseconds)] backup-push ==="
   cd "$REPO" || { echo "repo missing"; exit 1; }
+  # Optional by design: an install that never made ~/.claude a git repo (or
+  # gave it no remote) gets ONE quiet line, not a nightly error. Setting up the
+  # backup repo is the user's call — see the README.
+  git rev-parse --git-dir >/dev/null 2>&1 \
+    || { echo "~/.claude is not a git repo — backup disabled (git init + add a remote to enable)"; exit 0; }
+  git remote get-url origin >/dev/null 2>&1 \
+    || { echo "~/.claude has no 'origin' remote — backup disabled (add one to enable)"; exit 0; }
   branch="$(git branch --show-current)"
 
   if [ -n "$(git status --porcelain)" ]; then

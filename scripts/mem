@@ -38,10 +38,10 @@ backend_search() {
 }
 backend_expand() { exec python3 -m memsearch expand "$1"; }
 
-# O tier vetorial e OPCIONAL: sem ele a escada de retrieval ainda responde pelo
-# grep. Mas "mem: search failed" sozinho nao diz isso — o usuario nao tem como
-# adivinhar que memsearch e um pacote a parte, que nao vem neste repo. Falhar
-# sem dizer o que instalar e o mesmo que falhar em silencio.
+# The vector tier is OPTIONAL: without it the retrieval ladder still answers
+# via grep. But "mem: search failed" alone does not say that — the user has no
+# way to guess that memsearch is a separate package that does not ship in this
+# repo. Failing without saying what to install is failing silently.
 backend_missing() {
   python3 -c 'import memsearch' >/dev/null 2>&1 && return 1
   cat >&2 <<'EOT'
@@ -73,7 +73,7 @@ except Exception:
 rec = {"ts": datetime.datetime.now().isoformat(timespec="seconds"),
        "ev": ev, "key": key, "hits": h}
 # Additive field: lines written before 2026-08-23 have no "coll" and are read
-# as "curated". Baseline for the pendência-2 review stays comparable.
+# as "curated", so the earlier usage baseline stays comparable.
 if coll:
     rec["coll"] = coll
 print(json.dumps(rec, ensure_ascii=False))

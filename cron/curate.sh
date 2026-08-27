@@ -9,19 +9,20 @@ set -uo pipefail
 LOG="$HOME/.memsearch/cron.log"
 LLM_RUN="$HOME/.claude/scripts/llm-run"
 
-# Audit trail + veto (pendência 4). Curation must COMPRESS — same facts, fewer
-# chars. A big shrink is deletion, not compression, and an unattended LLM running
-# with --dangerously-skip-permissions does not get to delete memory unreviewed.
+# Audit trail + veto. Curation must COMPRESS — same facts, fewer chars. A big
+# shrink is deletion, not compression, and an unattended LLM running with
+# --dangerously-skip-permissions does not get to delete memory unreviewed.
 # Real incident: a project MEMORY.md went 6534 -> 2568 chars with no record.
 # A synchronous human gate was rejected (it would freeze the cron), so: always
 # log the delta, alert past CUT_ALERT, and roll back past CUT_VETO.
 CUT_ALERT=30   # % shrink -> record it loudly
 CUT_VETO=50    # % shrink -> restore from .bak, do not accept
-# Carimbo da rodada. O artefato vetado NÃO pode ser um slot fixo: o alerta vive
-# no INBOX por semanas e é um comando com caminho literal. Com slot fixo, um
-# alerta antigo passa a apontar para a proposta de OUTRA rodada e o aceite
-# aplica silenciosamente algo que o usuário nunca revisou. Com carimbo, o
-# comando do alerta velho falha (`cannot stat`) em vez de acertar o alvo errado.
+# Round stamp. The vetoed artifact must NOT live in a fixed slot: the alert
+# sits in the INBOX for weeks and is a command with a literal path. With a
+# fixed slot, an old alert would point at ANOTHER round's proposal and
+# accepting it would silently apply something the user never reviewed. With a
+# stamp, the old alert's command fails (`cannot stat`) instead of hitting the
+# wrong target.
 STAMP="$(date +%Y%m%d-%H%M%S)"
 # Optional notification channel. NOT required: cron.log always gets the record,
 # so the audit trail survives with no Obsidian, no vault, no INBOX file.
@@ -39,7 +40,7 @@ ts() { date -Iseconds; }
 TARGETS=""   # newline-separated "- <file> (cap <cap>)" lines for the prompt
 SIZES=""     # newline-separated "<chars_before>|<cap>|<file>|<label>" for the audit
 
-# Characters, not bytes — pt-BR accents inflate byte counts ~2%, and check-caps.sh
+# Characters, not bytes — accented text inflates byte counts ~2%, and check-caps.sh
 # measures chars. Two components disagreeing about "over cap" is its own bug.
 chars() { python3 -c "import sys;print(len(open(sys.argv[1],encoding='utf-8',errors='replace').read()))" "$1" 2>/dev/null || echo 0; }
 
@@ -47,10 +48,10 @@ register() {
   local file="$1" cap="$2" label="$3"
   [ -f "$file" ] || { echo "skip $label: no file"; return; }
   cp -p "$file" "${file}.bak"
-  # Uma proposta vetada de uma rodada ANTERIOR não pode sobreviver a esta: o
-  # alerta novo aponta para o mesmo caminho, e o usuário aceitaria um `.rejected`
-  # que não corresponde mais ao que o curate propôs agora. Qualquer `.rejected`
-  # em disco tem que pertencer à rodada corrente.
+  # A vetoed proposal from a PREVIOUS round must not survive into this one:
+  # the new alert points at the same path, and the user would accept a
+  # `.rejected` that no longer matches what curate proposed now. Any
+  # `.rejected` on disk must belong to the current round.
   for old in "${file}".rejected "${file}".rejected-*; do
     [ -e "$old" ] || continue
     echo "  discarding previous vetoed proposal, never reviewed: $old"
@@ -79,29 +80,31 @@ audit_and_veto() {
       # there is nothing to judge. Single slot, same convention as .bak; a later
       # veto on the same file overwrites it. NOT *.bak on purpose — distill.sh
       # sweeps those, and this has to survive until the user looks at it.
-      # O curate pode ter APAGADO o arquivo em vez de esvaziá-lo. Aí não há o
-      # que copiar, e mandar `diff`/`cp` contra um `.rejected` inexistente faz o
-      # alerta instruir um comando que falha (ou, com artefato velho em disco,
-      # restaurar a proposta ERRADA por cima da memória boa).
+      # Curate may have DELETED the file rather than emptied it. Then there is
+      # nothing to copy, and pointing `diff`/`cp` at a nonexistent `.rejected`
+      # makes the alert instruct a command that fails (or, with a stale
+      # artifact on disk, restores the WRONG proposal over good memory).
       rej="${file}.rejected-${STAMP}"
       if [ -f "$file" ]; then
         cp -p "$file" "$rej"
-        # `aceitar` CONSOME o artefato: sem o `rm`, o `.rejected` sobrevive ao
-        # aceite e o comando não é idempotente — se a memória for editada depois,
-        # rodar o mesmo `cp` de novo (o alerta segue aberto no INBOX) sobrescreve
-        # as edições novas com a versão antiga já aceita.
+        # `accept` CONSUMES the artifact: without the `rm`, the `.rejected`
+        # survives the acceptance and the command is not idempotent — if the
+        # memory is edited later, running the same `cp` again (the alert is
+        # still open in the INBOX) overwrites the new edits with the already-
+        # accepted old version.
         review="Review: diff \"${file}\" \"${rej}\" | accept: cp \"${rej}\" \"${file}\" && rm \"${rej}\" | discard: rm \"${rej}\""
       else
         review="The proposal was to DELETE the file — there is nothing to review. If deleting really is right, do it by hand"
       fi
       cp -p "${file}.bak" "$file"
-      # O restore devolve o arquivo ao tamanho original. Se ELE já estourava o
-      # cap, comprimir não é a saída: curate só sabe comprimir (perde conteúdo),
-      # e a correção certa é QUEBRAR em topics/ (não perde nada). Sem esta dica o
-      # ciclo se repete toda semana: curate corta, veto restaura, nada melhora.
-      # A saída para overflow depende de QUAL camada é. Store de projeto quebra
-      # em topics/ + índice; o MEMORY.md global não tem topics/ — lá o excedente
-      # é fato de domínio, e a saída é rotear para o skill dono via `kb`.
+      # The restore returns the file to its original size. If THAT was already
+      # over cap, compressing is not the way out: curate only knows how to
+      # compress (loses content), and the right fix is to SPLIT into topics/
+      # (loses nothing). Without this hint the cycle repeats weekly: curate
+      # cuts, the veto restores, nothing improves.
+      # The overflow exit depends on WHICH layer it is. A project store splits
+      # into topics/ + an index line; the global MEMORY.md has no topics/ —
+      # there the excess is usually reusable knowledge that belongs elsewhere.
       hint=""
       if [ "$before" -gt "$cap" ]; then
         case "$file" in
@@ -131,20 +134,20 @@ audit_and_veto() {
 
   shopt -s nullglob
   for ctx in "$PROJECTS_ROOT"/*/context; do
-    # A pré-condição é o ARQUIVO que o curate cura, não o diretório de daily
-    # logs. Guardar por `-d memory/` excluía incondicionalmente todo store com
-    # MEMORY.md e sem memory/ — 6 deles em [[2026-08-26]] — e nenhum jamais
-    # passaria pela porta de atividade. Era o mesmo buraco da CLARK, um nível
-    # acima e pior: lá o store ficava inalcançável ao estourar o cap; aqui ele
-    # já nascia fora.
+    # The precondition is the FILE curate curates, not the daily-log directory.
+    # Gating on `-d memory/` unconditionally excluded every store with a
+    # MEMORY.md and no memory/ — 6 of them on 2026-08-26 — and none would ever
+    # reach the activity gate. Same hole as the CLARK case, one level up and
+    # worse: there the store became unreachable once over cap; here it was
+    # born outside.
     [ -f "$ctx/MEMORY.md" ] || continue
-    # Duas portas, não uma. A de atividade sozinha deixa um buraco permanente:
-    # um store que estoura o cap e DEPOIS fica quieto nunca mais é registrado,
-    # então nunca é quebrado em topics/ — e paga o custo de startup para sempre.
-    # O check-caps.sh enxerga esses arquivos (não tem gate) e avisa que "curate
-    # alone will not fix this"; era literalmente verdade. Estar acima do cap é
-    # condição suficiente por si só. (CLARK/addon-controle-qualidade, 2516 chars
-    # com daily log parado em 23/07, foi o caso que revelou isso — [[2026-08-26]].)
+    # Two gates, not one. The activity gate alone leaves a permanent hole: a
+    # store that goes over cap and THEN goes quiet is never registered again,
+    # so it is never split into topics/ — and pays the startup cost forever.
+    # check-caps.sh sees those files (it has no gate) and warns that "curate
+    # alone will not fix this"; that was literally true. Being over cap is a
+    # sufficient condition by itself. (CLARK/addon-controle-qualidade, 2516
+    # chars with its daily log idle since 07-23, was the case that exposed it.)
     if [ -z "$(find "$ctx/memory" -maxdepth 1 -name '*.md' -mtime -7 -print -quit 2>/dev/null)" ] \
        && [ "$(chars "$ctx/MEMORY.md")" -le 2500 ]; then
       continue
@@ -157,7 +160,7 @@ audit_and_veto() {
   else
     # Single LLM call for all eligible files. Deletion/merge is judgment work →
     # smart tier (backend mapping lives in llm-run; never drift to a lesser model).
-    prompt="Curate these SAP-memory files. For EACH file independently: (1) remove stale or resolved entries, (2) merge duplicate or near-duplicate facts, (3) consolidate related entries that can be expressed more compactly. Tighten the writing: make each entry more direct, precise and concise — that is the ONLY compression you should do. Do NOT delete content to fit the character cap: if the file is still over cap after tightening, that is fine and expected, because a separate step will split it into index notes without losing anything. Deleting a durable fact to hit a number is a bug, not curation. Preserve the section headings. Do NOT touch any content between '<!-- BEGIN skills:auto -->' and '<!-- END skills:auto -->' markers — that block is auto-generated by a script. ACROSS files: if facts in the listed files contradict each other, do not silently keep both — flag it by prepending a single line '⚠️ CONTRADIÇÃO: <resumo> (vs <outro arquivo>)' at the top of the affected file's relevant section, keeping the newer/more specific fact. If a file is already lean and has nothing to prune, leave it unchanged. Edit ONLY the files listed below — no other files.
+    prompt="Curate these memory files. For EACH file independently: (1) remove stale or resolved entries, (2) merge duplicate or near-duplicate facts, (3) consolidate related entries that can be expressed more compactly. Tighten the writing: make each entry more direct, precise and concise — that is the ONLY compression you should do. Do NOT delete content to fit the character cap: if the file is still over cap after tightening, that is fine and expected, because a separate step will split it into index notes without losing anything. Deleting a durable fact to hit a number is a bug, not curation. Preserve the section headings. Do NOT touch any content between '<!-- BEGIN skills:auto -->' and '<!-- END skills:auto -->' markers — that block is auto-generated by a script. ACROSS files: if facts in the listed files contradict each other, do not silently keep both — flag it by prepending a single line '⚠️ CONTRADICTION: <summary> (vs <other file>)' at the top of the affected file's relevant section, keeping the newer/more specific fact. If a file is already lean and has nothing to prune, leave it unchanged. Edit ONLY the files listed below — no other files.
 ${TARGETS}"
     "$LLM_RUN" smart "$prompt"; rc=$?
     [ "$rc" = 3 ] && echo "  quota/spend limit reached — curate did not run this week."
@@ -168,38 +171,39 @@ ${TARGETS}"
     audit_and_veto
 
     # -- split -------------------------------------------------------------
-    # Arquivo ainda acima do cap depois do aperto de escrita: quebrar em
-    # `topics/` + linha de índice, que é LOSSLESS. Antes a única ferramenta era
-    # comprimir (lossy) e foi assim que um store perdeu 3.966 chars sem registro.
-    # O LLM só devolve o PLANO; quem move é o split-memory.py, que verifica que
-    # nenhuma linha sumiu e reverte se sumiu. "Keys, not prompts".
+    # File still over cap after the writing pass: split into `topics/` + an
+    # index line, which is LOSSLESS. Before this, the only tool was compressing
+    # (lossy), and that is how a store lost 3,966 chars with no record. The LLM
+    # only returns the PLAN; the mover is split-memory.py, which verifies that
+    # no line was lost and reverts if any was. "Keys, not prompts".
     echo "-- split --"
     while IFS='|' read -r before cap file label; do
       [ -n "${file:-}" ] || continue
       case "$file" in */projects/*/context/MEMORY.md) ;; *) continue ;; esac
-      atual="$(chars "$file")"
-      [ "$atual" -gt "$cap" ] || continue
-      plano="$(mktemp)"
-      splitprompt="Read ${file}. It is ${atual} characters, over its ${cap}-character cap. Pick the whole '## ' section(s) whose removal would bring it under the cap with the least disruption — prefer sections that are self-contained detail rather than the index or short shared context. Write ONLY the file ${plano}, containing JSON and nothing else: {\"moves\":[{\"heading\":\"## exact heading text\",\"slug\":\"kebab-case-slug\",\"index_line\":\"- [Human Title](topics/kebab-case-slug.md) — one-line summary\"}]}. The heading must match a line in the file EXACTLY. The slug must be lowercase letters, digits and hyphens only. Do not edit ${file} or any other file — only write ${plano}."
-      # "o LLM só devolve o plano, não escreve no store" era uma frase do PROMPT
-      # — e prompt não prende nada (a lição do dia inteiro). Com
-      # --dangerously-skip-permissions o modelo PODE escrever no MEMORY.md.
-      # Então: hash antes, hash depois. Se ele mexeu, desfaz a mexida dele e
-      # segue só com o plano — quem move continua sendo o código.
-      antes_hash="$(sha256sum "$file" | cut -d" " -f1)"
-      guarda="$(mktemp)"; cp -p "$file" "$guarda"
+      current="$(chars "$file")"
+      [ "$current" -gt "$cap" ] || continue
+      plan="$(mktemp)"
+      splitprompt="Read ${file}. It is ${current} characters, over its ${cap}-character cap. Pick the whole '## ' section(s) whose removal would bring it under the cap with the least disruption — prefer sections that are self-contained detail rather than the index or short shared context. Write ONLY the file ${plan}, containing JSON and nothing else: {\"moves\":[{\"heading\":\"## exact heading text\",\"slug\":\"kebab-case-slug\",\"index_line\":\"- [Human Title](topics/kebab-case-slug.md) — one-line summary\"}]}. The heading must match a line in the file EXACTLY. The slug must be lowercase letters, digits and hyphens only. Do not edit ${file} or any other file — only write ${plan}."
+      # "the LLM only returns the plan, it never writes to the store" was a
+      # sentence in the PROMPT — and a prompt binds nothing (the lesson of that
+      # whole day). With --dangerously-skip-permissions the model CAN write to
+      # MEMORY.md. So: hash before, hash after. If it touched the file, undo
+      # its edit and continue with the plan only — the mover stays the code.
+      before_hash="$(sha256sum "$file" | cut -d" " -f1)"
+      guard="$(mktemp)"; cp -p "$file" "$guard"
       "$LLM_RUN" cheap "$splitprompt"; src=$?
-      if [ "$src" = 3 ]; then echo "  cota estourada — split adiado"; rm -f "$plano" "$guarda"; break; fi
-      if [ "$(sha256sum "$file" | cut -d" " -f1)" != "$antes_hash" ]; then
-        cp -p "$guarda" "$file"
+      if [ "$src" = 3 ]; then echo "  quota exhausted — split postponed"; rm -f "$plan" "$guard"; break; fi
+      if [ "$(sha256sum "$file" | cut -d" " -f1)" != "$before_hash" ]; then
+        cp -p "$guard" "$file"
         echo "  NOTE: the LLM edited ${label} despite the instruction — edit reverted, continuing with the plan only"
       fi
-      rm -f "$guarda"
-      # Passa o hash do estado ATUAL: o split recusa se o arquivo mudar entre
-      # aqui e a aplicacao (outra sessao escrevendo durante o cron).
-      agora_hash="$(sha256sum "$file" | cut -d" " -f1)"
-      python3 "$HOME/.claude/cron/split-memory.py" "$file" "$cap" "$plano" "$agora_hash" 2>&1 | sed 's/^/  /'
-      rm -f "$plano"
+      rm -f "$guard"
+      # Pass the hash of the CURRENT state: the split refuses if the file
+      # changes between here and application (another session writing during
+      # the cron).
+      now_hash="$(sha256sum "$file" | cut -d" " -f1)"
+      python3 "$HOME/.claude/cron/split-memory.py" "$file" "$cap" "$plan" "$now_hash" 2>&1 | sed 's/^/  /'
+      rm -f "$plan"
     done <<< "$SIZES"
   fi
 
@@ -215,6 +219,8 @@ ${TARGETS}"
 # Second channel, best-effort. The record already landed in cron.log above; this
 # only surfaces it where the user actually looks. Absent INBOX = no alert here,
 # never a lost audit trail.
+# One checkbox PER alert: a single printf over the whole block collapsed every
+# alert of the round into one checkbox with embedded newlines — broken list.
 if [ -n "${ALERTS:-}" ] && [ -f "$INBOX" ]; then
-  printf -- '- [ ] %s\n' "$(printf '%s' "$ALERTS" | head -20)" >>"$INBOX"
+  printf '%s\n' "$ALERTS" | head -20 | sed '/^$/d; s/^/- [ ] /' >>"$INBOX"
 fi

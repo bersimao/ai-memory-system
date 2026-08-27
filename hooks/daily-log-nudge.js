@@ -1,32 +1,34 @@
-// Stop hook: lembra o agente de escrever o daily log, uma vez por sessão.
+// Stop hook: reminds the agent to write the daily log, once per session.
 //
-// Por que existe: "Log silently as work happens" mora no CLAUDE.md e é
-// INSTRUÇÃO DE PROMPT — não prende. Medido em 24/08: o agente escreveu 47% dos
-// daily logs; o backfill (haiku, lendo o transcript inteiro) cobriu 52%.
-// A memória global já registra o princípio: "SessionStart hook > instrução
-// 'leia no início' — stdout do hook sempre entra no contexto". Isto é o mesmo,
-// no outro extremo da sessão.
+// Why it exists: "Log silently as work happens" lives in CLAUDE.md and is a
+// PROMPT instruction — it binds nothing. Measured on 08-24: the agent wrote
+// 47% of the daily logs; the backfill (haiku, reading the whole transcript)
+// covered 52%. Global memory already records the principle: "SessionStart
+// hook > a 'read this at startup' instruction — hook stdout always enters the
+// context". This is the same thing, at the other end of the session.
 //
-// SessionEnd NÃO serve: o agente já não pode agir, e o evento não dispara em
-// crash nem em `wsl --shutdown`. Por isso Stop, que roda com a sessão viva.
+// SessionEnd does NOT work: the agent can no longer act, and the event fires
+// neither on a crash nor on `wsl --shutdown`. Hence Stop, which runs with the
+// session still alive.
 //
-// Só cutuca. Não escreve o log: resumir exige julgamento, e código
-// determinístico só saberia despejar o transcript, que já existe.
+// It only nudges. It does not write the log: summarizing takes judgment, and
+// deterministic code could only dump the transcript, which already exists.
 //
-// ENTREGA: `systemMessage` sozinho só EXIBE texto — o turno já acabou, então o
-// agente vê e não age. Quem impede a parada e devolve o controle ao agente é
-// `decision:"block"` + `reason`. Sem isso o hook parece instalado e não faz nada,
-// exatamente a falha que este sistema existe para evitar.
+// DELIVERY: `systemMessage` alone only DISPLAYS text — the turn is already
+// over, so the agent sees it and cannot act. What blocks the stop and hands
+// control back to the agent is `decision:"block"` + `reason`. Without that the
+// hook looks installed and does nothing — exactly the failure this system
+// exists to prevent.
 //
-// LOOP: um Stop bloqueado faz o agente continuar e parar de novo, disparando o
-// hook outra vez. A flag é gravada ATOMICAMENTE (wx) ANTES de qualquer saída —
-// se a gravação falhar, o hook desiste em vez de arriscar bloqueio infinito.
-// `stop_hook_active` no input também marca reentrada e é respeitado.
+// LOOP: a blocked Stop makes the agent continue and stop again, firing the
+// hook once more. The flag is written ATOMICALLY (wx) BEFORE any output — if
+// the write fails, the hook gives up rather than risk an infinite block.
+// `stop_hook_active` in the input also marks reentry and is honored.
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const MIN_USER_TURNS = 8;   // abaixo disso a sessão não rendeu log
+const MIN_USER_TURNS = 8;   // below this the session didn't yield a log
 
 let input;
 try { input = JSON.parse(fs.readFileSync(0, 'utf8')); } catch { process.exit(0); }
@@ -35,13 +37,13 @@ const transcriptPath = input.transcript_path;
 const sessionId = input.session_id || 'nosession';
 if (!transcriptPath || !fs.existsSync(transcriptPath)) process.exit(0);
 
-// Já estamos dentro de um Stop bloqueado por hook? Então não bloquear de novo.
+// Already inside a hook-blocked Stop? Then do not block again.
 if (input.stop_hook_active) process.exit(0);
 
-// Uma cutucada por sessão. Sem isto, o Stop dispara a cada turno e vira ruído.
+// One nudge per session. Without this, Stop fires every turn and becomes noise.
 const flag = path.join(os.tmpdir(), `claude-daily-log-nudge-${sessionId}`);
 
-// Mesma âncora do memory-inject/transcript-capture: o repo, não o cwd.
+// Same anchor as memory-inject/transcript-capture: the repo, not the cwd.
 let projectDir;
 try {
   const { storeDir } = require('./project-store.js');
@@ -53,11 +55,11 @@ const localDate = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 6e4)
 const today = localDate(new Date());
 const dlog = path.join(projectDir, 'context', 'memory', `${today}.md`);
 
-// Já existe log de hoje? Então nada a cutucar. (Se estiver parcial, o backfill
-// agora estende — ver cron/backfill-daily-logs.sh.)
-try { if (fs.statSync(dlog).size > 0) process.exit(0); } catch { /* não existe */ }
+// Today's log already exists? Then there is nothing to nudge. (If it is
+// partial, the backfill now extends it — see cron/backfill-daily-logs.sh.)
+try { if (fs.statSync(dlog).size > 0) process.exit(0); } catch { /* doesn't exist */ }
 
-// A sessão rendeu o suficiente para valer um log?
+// Did the session produce enough to be worth a log?
 let userTurns = 0;
 try {
   const lines = fs.readFileSync(transcriptPath, 'utf8').split('\n');
@@ -69,8 +71,9 @@ try {
 } catch { process.exit(0); }
 if (userTurns < MIN_USER_TURNS) process.exit(0);
 
-// Reserva atômica: quem criar o arquivo cutuca; qualquer reentrada sai calada.
-// Se não der para reservar, NÃO bloquear — bloqueio sem trava vira loop.
+// Atomic reservation: whoever creates the file nudges; any reentry exits
+// silently. If the reservation fails, do NOT block — a block without a lock
+// becomes a loop.
 try {
   fs.closeSync(fs.openSync(flag, 'wx'));
 } catch {

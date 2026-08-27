@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Sync the memory system from the live install (~/.claude) into this repo.
 #
-# Why a script and not "copy the folder": ~/.claude also holds 929 files of
-# per-client project memory and 185 files of SAP B1 skills. Neither is part of
+# Why a script and not "copy the folder": ~/.claude also holds hundreds of
+# files of per-client project memory and domain skills. Neither is part of
 # the memory system and neither may reach a public repo. The manifest below is
 # the release surface — nothing outside it ships, by construction.
 #
-# Why sync at all: the ia-skills repo taught this lesson. Two copies of the same
-# file with no comparator diverge within a day of normal work.
+# Why sync at all: two copies of the same file with no comparator diverge
+# within a day of normal work.
 #
 #   ./sync-release.sh --check     show what differs (default)
 #   ./sync-release.sh --from-home copy live -> repo
@@ -43,7 +43,7 @@ MANIFEST=(
   scripts/llm-run
 )
 
-# Arquivos nativos do repo (nao vem de ~/.claude) que o guard tambem varre.
+# Repo-native files (they do not come from ~/.claude) the guard also scans.
 EXTRA_SCAN=(docs/memory-instructions.md docs/codex-support.md skills/memory-write/SKILL.md)
 
 mode="${1:---check}"
@@ -52,21 +52,21 @@ rc=0
 for rel in "${MANIFEST[@]}"; do
   s="$SRC/$rel"; d="$DST/$rel"
   if [ ! -f "$s" ]; then
-    printf 'FALTA na origem  %s\n' "$rel"; rc=1; continue
+    printf 'MISSING at source %s\n' "$rel"; rc=1; continue
   fi
   case "$mode" in
     --check)
       if [ ! -f "$d" ]; then
-        printf 'novo             %s\n' "$rel"; rc=1
+        printf 'new              %s\n' "$rel"; rc=1
       elif ! cmp -s "$s" "$d"; then
-        printf 'difere           %s\n' "$rel"; rc=1
+        printf 'differs          %s\n' "$rel"; rc=1
       fi
       ;;
     --from-home)
       mkdir -p "$(dirname "$d")"
-      cmp -s "$s" "$d" || { cp -p "$s" "$d"; printf 'copiado          %s\n' "$rel"; }
+      cmp -s "$s" "$d" || { cp -p "$s" "$d"; printf 'copied           %s\n' "$rel"; }
       ;;
-    *) echo "uso: $0 [--check|--from-home]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--check|--from-home]" >&2; exit 2 ;;
   esac
 done
 
@@ -92,47 +92,48 @@ if [ "$mode" = --from-home ]; then
              data/memory.env.example .gitignore; do
     [ -f "$DST/$rel" ] && scan+=("$DST/$rel")
   done
-  # Remove as ocorrencias legitimas de "$HOME" da LINHA antes de casar, em vez
-  # de descartar a linha inteira que as contem: com `grep -v` bastava a linha
-  # do vazamento mencionar $HOME de passagem para escapar do guard.
+  # Strip the legitimate "$HOME" occurrences from the LINE before matching,
+  # instead of discarding the whole line containing them: with `grep -v`, a
+  # leaking line only had to mention $HOME in passing to escape the guard.
   #
-  # ponytail: `\b${me}\b` pega vazamento fora de path (linha de autor, e-mail),
-  # mas quem tiver um usuario generico ("dev", "test") vai ver falso-positivo.
-  # Aceito de proposito: o guard aborta ruidosamente e mostra a linha, e para
-  # um guard de vazamento errar alto e melhor do que errar calado.
+  # ponytail: `\b${me}\b` catches leaks outside a path (author line, e-mail),
+  # but anyone with a generic username ("dev", "test") will see false
+  # positives. Accepted on purpose: the guard aborts loudly and shows the
+  # line, and a leak guard that errs loudly beats one that errs silently.
   bad=""
   for f in "${scan[@]}"; do
     hit=$(sed 's/\$HOME//g; s/${HOME}//g' "$f" | grep -nE "$pat" 2>/dev/null) || true
     [ -n "$hit" ] && bad="${bad}${bad:+$'\n'}$(printf '%s\n' "$hit" | sed "s|^|$f:|")"
   done
   if [ -n "$bad" ]; then
-    echo "ABORTA: path pessoal chegou no release:"; echo "$bad"
-    # Reverter, nao so avisar. O aviso rola na tela e um `git add -A` depois
-    # comita o vazamento assim mesmo — foi exatamente assim que estado efemero
-    # ja entrou nos repos deste projeto. Arquivo contaminado volta ao commit.
+    echo "ABORT: a personal path reached the release:"; echo "$bad"
+    # Revert, not just warn. The warning scrolls off screen and a later
+    # `git add -A` commits the leak anyway — that is exactly how ephemeral
+    # state entered this project's repos before. A contaminated file goes back
+    # to its committed state.
     printf '%s\n' "$bad" | cut -d: -f1 | sort -u | while read -r f; do
       rel="${f#$DST/}"
-      # A pergunta certa e "isto e regeneravel?", NAO "isto esta versionado?".
-      # Versionado x nao-versionado era o eixo errado: assim que README.md e
-      # este script forem commitados eles viram tracked, e um `git checkout --`
-      # jogaria fora TODA alteracao nao commitada do arquivo — nao so a linha
-      # que vazou. Arquivo do MANIFEST e copia de $SRC e volta de graca;
-      # arquivo escrito a mao nao volta de lugar nenhum.
+      # The right question is "is this regenerable?", NOT "is this tracked?".
+      # Tracked vs untracked was the wrong axis: as soon as README.md and this
+      # script are committed they become tracked, and a `git checkout --`
+      # would throw away EVERY uncommitted change in the file — not just the
+      # leaking line. A MANIFEST file is a copy of $SRC and comes back for
+      # free; a hand-written file comes back from nowhere.
       if printf '%s\n' "${MANIFEST[@]}" | grep -qxF "$rel"; then
         if git -C "$DST" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
-          git -C "$DST" checkout -- "$rel" && echo "  revertido      $rel"
+          git -C "$DST" checkout -- "$rel" && echo "  reverted       $rel"
         else
-          rm -f "$f" && echo "  removido       $rel"
+          rm -f "$f" && echo "  removed        $rel"
         fi
       else
-        echo "  NAO revertido  $rel (escrito a mao — corrija e rode de novo)"
+        echo "  NOT reverted   $rel (hand-written — fix it and run again)"
       fi
     done
     rc=1
   else
-    echo "tripwire: nenhum path pessoal no release ✔"
+    echo "tripwire: no personal path in the release ✔"
   fi
 fi
 
-[ "$mode" = --check ] && [ $rc -eq 0 ] && echo "repo em dia com $SRC ✔"
+[ "$mode" = --check ] && [ $rc -eq 0 ] && echo "repo up to date with $SRC ✔"
 exit $rc

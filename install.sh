@@ -12,11 +12,13 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 DEST="${CLAUDE_HOME:-$HOME/.claude}"
 DRY=0
 ASSUME_YES=0
+WANT_CRON=0
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY=1 ;;
     --yes|-y)  ASSUME_YES=1 ;;   # non-interactive: append the instructions too
-    *) echo "usage: $0 [--dry-run] [--yes]" >&2; exit 2 ;;
+    --cron)    WANT_CRON=1 ;;    # non-interactive: register the cron jobs too
+    *) echo "usage: $0 [--dry-run] [--yes] [--cron]" >&2; exit 2 ;;
   esac
 done
 say() { printf '%s\n' "$*"; }
@@ -33,8 +35,9 @@ if [ -n "$missing" ]; then
   exit 1
 fi
 say "dependencies ok: node $(node -v), python3 $(python3 -V 2>&1 | cut -d' ' -f2)"
-# Opcional de proposito. Dizer aqui evita a descoberta pior: instalar, usar por
-# dias, e so entao topar com "search failed" sem saber que faltava um pacote.
+# Optional on purpose. Saying it here avoids the worse discovery: installing,
+# using it for days, and only then hitting "search failed" with no idea a
+# package was missing.
 if python3 -c 'import memsearch' >/dev/null 2>&1; then
   say "optional: memsearch found — vector search tier available"
 else
@@ -90,23 +93,23 @@ hooks = target.setdefault('hooks', {})
 added = 0
 for event, matchers in example.get('hooks', {}).items():
     existing = hooks.setdefault(event, [])
-    # Um hook ja esta registrado se QUALQUER comando cita o mesmo script.
+    # A hook counts as registered if ANY command mentions the same script.
     registered = {
         os.path.basename(h.get('command', '').split('"')[-2] if '"' in h.get('command', '') else h.get('command', ''))
         for m in existing for h in m.get('hooks', [])
     }
     registered |= {n for m in existing for h in m.get('hooks', [])
                    for n in [s for s in h.get('command', '').split('/') if s.endswith('.js')]}
-    novos = []
+    new = []
     for m in matchers:
         for h in m.get('hooks', []):
             script = h.get('command', '').split('/')[-1].strip('"')
             if script in registered:
                 continue
-            novos.append(h)
-    if novos:
-        existing.append({'hooks': novos})
-        added += len(novos)
+            new.append(h)
+    if new:
+        existing.append({'hooks': new})
+        added += len(new)
 
 fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target_path) or '.', suffix='.tmp')
 with os.fdopen(fd, 'w', encoding='utf-8') as fh:
@@ -116,18 +119,19 @@ os.replace(tmp, target_path)
 print(f"  {added} hook(s) added; the ones already there were preserved")
 PY
   merge_rc=$?
-  # Falha aqui e a pior de todas: sem os hooks registrados nada dispara, e o
-  # usuario fica achando que instalou. Nunca dizer "pronto" por cima disso.
+  # This failure is the worst of all: with no hooks registered nothing fires,
+  # and the user walks away believing it is installed. Never say "done" over it.
   [ $merge_rc -ne 0 ] && say "  settings.json merge FAILED — no hooks were registered"
 fi
 
 # --- instructions --------------------------------------------------------
-# Sem isto o sistema fica meio vivo: os hooks injetam e capturam, mas nada diz
-# ao agente para ESCREVER memoria, respeitar os caps ou buscar antes de negar.
+# Without this the system is half-alive: the hooks inject and capture, but
+# nothing tells the agent to WRITE memory, honor the caps, or search before
+# denying.
 #
-# Onde o agente le instrucoes depende do CLI: Claude Code usa CLAUDE.md, Codex
-# usa AGENTS.md. Mesmo conteudo, destinos diferentes — instala nos dois quando a
-# maquina tem os dois.
+# Where the agent reads instructions depends on the CLI: Claude Code uses
+# CLAUDE.md, Codex uses AGENTS.md. Same content, different targets — install
+# into both when the machine has both.
 say
 MARK="<!-- memory-system:instructions -->"
 
@@ -168,9 +172,9 @@ else
     say "Append them now? A backup is kept. [y/N]"
     read -r answer || answer=n
   else
-    # Sem terminal (CI, pipeline, chamado por outro script). NUNCA travar num
-    # read que ninguem pode responder — instalador que trava e indistinguivel de
-    # instalador que quebrou. Pula e diz como obter mesmo assim.
+    # No terminal (CI, pipeline, called from another script). NEVER hang on a
+    # read nobody can answer — an installer that hangs is indistinguishable
+    # from one that crashed. Skip, and say how to get them anyway.
     answer=n
     say "  (non-interactive: skipping. Re-run with --yes to append them.)"
   fi
@@ -183,10 +187,70 @@ else
   esac
 fi
 
+# --- scheduling ----------------------------------------------------------
+# The hooks fire around sessions; the daily distill and the weekly curation
+# need a scheduler. Without this section the README promised maintenance that
+# a fresh install never ran — the cron/ scripts were copied and then sat there.
+#
+# Consent is separate from --yes on purpose: these jobs run `claude -p`
+# headless with --dangerously-skip-permissions on files under ~/.claude, and
+# they spend the user's own Claude usage. That is opted into explicitly
+# (interactive y/N, or the --cron flag), never as a side effect of --yes.
+say
+CRON_MARK="# memory-system"
+cron_rc=0
+if ! command -v crontab >/dev/null 2>&1; then
+  say "crontab not found — schedule these two yourself (cron, anacron, or a systemd timer):"
+  say "  daily:  $DEST/cron/distill.sh    (transcripts -> daily logs -> memory, plus the tripwires)"
+  say "  weekly: $DEST/cron/curate.sh     (tightens the memory files, with the veto)"
+elif crontab -l 2>/dev/null | grep -qF "$CRON_MARK"; then
+  say "cron jobs already registered (see: crontab -l | grep memory-system)"
+else
+  say "Scheduled maintenance (runs the claude CLI headless — this spends YOUR Claude usage):"
+  say "  daily  12:15       $DEST/cron/distill.sh"
+  say "  weekly Mon 12:45   $DEST/cron/curate.sh"
+  if [ $DRY -eq 1 ]; then
+    say "  [dry-run] register the two crontab entries"
+  else
+    if [ $WANT_CRON -eq 1 ]; then
+      answer=y
+    elif [ -t 0 ]; then
+      say "Register them in your crontab now? [y/N]"
+      read -r answer || answer=n
+    else
+      answer=n
+      say "  (non-interactive: skipping. Re-run with --cron to register them.)"
+    fi
+    case "$answer" in
+      [yY]*)
+        # Read first, then write: `crontab -l | ... | crontab -` reads and
+        # replaces the same store in one pipeline, which is a race.
+        cur="$(crontab -l 2>/dev/null || true)"
+        { [ -n "$cur" ] && printf '%s\n' "$cur"
+          echo "15 12 * * * $DEST/cron/distill.sh $CRON_MARK:distill"
+          echo "45 12 * * 1 $DEST/cron/curate.sh $CRON_MARK:curate"
+        } | crontab - && say "  registered (edit times with crontab -e; remove with: crontab -l | grep -v memory-system | crontab -)" \
+          || { say "  crontab registration FAILED"; cron_rc=1; }
+        # WSL and minimal containers often have cron installed but not running.
+        # A registered entry on a dead daemon is the silent failure again.
+        if ! pgrep -x cron >/dev/null 2>&1 && ! pgrep -x crond >/dev/null 2>&1; then
+          say "  NOTE: no cron daemon is running. On WSL: sudo service cron start,"
+          say "  and enable systemd (or start it per boot) so the jobs actually fire."
+        fi
+        ;;
+      *)
+        say "  skipped. Without a schedule the daily distill and weekly curation"
+        say "  never run — transcripts pile up but the memory files stay stale."
+        say "  Enable later: ./install.sh --cron"
+        ;;
+    esac
+  fi
+fi
+
 # --- verify --------------------------------------------------------------
 say
 say "self-checks"
-rc=$merge_rc
+rc=$((merge_rc + cron_rc))
 for t in "node $DEST/hooks/project-store.test.js" \
          "bash $DEST/cron/curate-audit.test.sh" \
          "python3 $DEST/cron/split-memory.test.py"; do

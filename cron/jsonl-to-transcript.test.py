@@ -9,7 +9,7 @@ Run: python3 ~/.claude/cron/jsonl-to-transcript.test.py
 """
 import importlib.util, os, sys, json, tempfile, datetime, subprocess
 
-SRC = os.path.expanduser("~/.claude/cron/jsonl-to-transcript.py")
+SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jsonl-to-transcript.py")
 fails = []
 
 def build_store(root, day, msgs, existing=None):
@@ -40,11 +40,12 @@ def check(name, cond, extra=""):
 
 MARKER = "<!-- auto-extracted from native session jsonl -->"
 yesterday = (datetime.date.today() - datetime.timedelta(days=2)).isoformat()
-msgs = [("user", "pergunta longa " * 40), ("assistant", "resposta longa " * 40)]
+msgs = [("user", "a long question " * 40), ("assistant", "a long answer " * 40)]
 
 with tempfile.TemporaryDirectory() as root:
-    # o script varre ~/.claude/projects — apontar ROOT via monkeypatch é frágil;
-    # em vez disso importa o módulo e chama collect/main com ROOT trocado.
+    # the script scans ~/.claude/projects — pointing ROOT via monkeypatch on a
+    # subprocess is fragile; instead import the module and call collect/main
+    # with ROOT swapped.
     spec = importlib.util.spec_from_file_location("j", SRC)
     m = importlib.util.module_from_spec(spec)
     sys.argv = ["j"]
@@ -52,10 +53,10 @@ with tempfile.TemporaryDirectory() as root:
         'if __name__ == "__main__":\n    main()', '')
     exec(compile(src, SRC, "exec"), m.__dict__)
     m.ROOT = os.path.join(root, "projects")
-    # Sem isto o coletor do Codex le ~/.codex/sessions de verdade e escreve em
-    # transcript de verdade — foi exatamente o que aconteceu ao adicionar o
-    # suporte a Codex: o teste reescreveu 17 arquivos reais, um deles perdendo
-    # 42k chars. Sandbox vale para TODAS as origens, nao so a principal.
+    # Without this the Codex collector reads the real ~/.codex/sessions and
+    # writes to real transcripts — exactly what happened when Codex support was
+    # added: the test rewrote 17 real files, one of them losing 42k chars. The
+    # sandbox applies to ALL sources, not just the main one.
     m.CODEX_SESSIONS = os.path.join(root, "codex-sessions")
     os.makedirs(m.CODEX_SESSIONS, exist_ok=True)
 
@@ -66,26 +67,26 @@ with tempfile.TemporaryDirectory() as root:
         return dest, (open(dest, encoding="utf-8").read() if os.path.exists(dest) else "")
 
     d, t = go(None)
-    check("arquivo ausente -> escreve", t.startswith(MARKER) and len(t) > 500, f"len={len(t)}")
+    check("missing file -> writes", t.startswith(MARKER) and len(t) > 500, f"len={len(t)}")
 
-    d, t = go("## 10:00:00\n**user:** so o ultimo par\n")          # Stop hook
-    check("sem marker -> SOBRESCREVE (era o bug dos 79 dias)",
+    d, t = go("## 10:00:00\n**user:** only the last pair\n")          # Stop hook
+    check("no marker -> OVERWRITES (the 79-day bug)",
           t.startswith(MARKER) and len(t) > 500, f"len={len(t)}")
 
     big = MARKER + "\n" + ("x" * 9000)
     d, t = go(big)
-    check("com marker e MAIOR -> pula", t == big, f"len={len(t)}")
+    check("marker and BIGGER -> skips", t == big, f"len={len(t)}")
 
-    small = MARKER + "\nquase vazio\n"
+    small = MARKER + "\nalmost empty\n"
     d, t = go(small)
-    check("com marker e MENOR -> re-extrai", len(t) > len(small), f"len={len(t)}")
+    check("marker and SMALLER -> re-extracts", len(t) > len(small), f"len={len(t)}")
 
-    d, t = go("## 10:00:00\n**user:** parcial\n", "--force")
-    check("--force sobrescreve de qualquer forma", t.startswith(MARKER))
+    d, t = go("## 10:00:00\n**user:** partial\n", "--force")
+    check("--force overwrites regardless", t.startswith(MARKER))
 
     # --- Codex ---------------------------------------------------------------
-    # Uma sessao do Codex no MESMO dia e MESMO projeto tem que entrar no mesmo
-    # transcript, ordenada por horario junto das mensagens do Claude Code.
+    # A Codex session on the SAME day and SAME project must land in the same
+    # transcript, ordered by time alongside the Claude Code messages.
     store_name = os.path.basename(os.path.dirname(os.path.dirname(
         os.path.dirname(build_store(root, yesterday, msgs, None)[1]))))
     day_dir = os.path.join(m.CODEX_SESSIONS, "2026", "01", "01")
@@ -97,34 +98,34 @@ with tempfile.TemporaryDirectory() as root:
         fh.write(json.dumps({"timestamp": f"{yesterday}T09:00:01.000Z",
                              "type": "event_msg",
                              "payload": {"type": "user_message",
-                                         "message": "pergunta feita no codex"}}) + "\n")
+                                         "message": "question asked in codex"}}) + "\n")
         fh.write(json.dumps({"timestamp": f"{yesterday}T09:00:02.000Z",
                              "type": "event_msg",
                              "payload": {"type": "agent_message",
-                                         "message": "resposta do codex"}}) + "\n")
+                                         "message": "answer from codex"}}) + "\n")
         fh.write(json.dumps({"timestamp": f"{yesterday}T09:00:03.000Z",
                              "type": "event_msg",
                              "payload": {"type": "token_count", "info": None}}) + "\n")
 
     m._store_cache.clear()
-    m.resolve_store = lambda cwd: store_name          # nao depende do node no teste
+    m.resolve_store = lambda cwd: store_name          # no node dependency in the test
     d, t = go(None)
-    check("mensagem do Codex entra no transcript",
-          "pergunta feita no codex" in t and "resposta do codex" in t)
-    check("telemetria do Codex (token_count) fica de fora", "token_count" not in t)
-    check("Codex e Claude Code no MESMO arquivo",
-          "pergunta feita no codex" in t and "pergunta longa" in t)
-    check("ordenado por horario (Codex 09:00 vem antes)",
-          t.index("pergunta feita no codex") < t.index("pergunta longa"))
+    check("Codex message enters the transcript",
+          "question asked in codex" in t and "answer from codex" in t)
+    check("Codex telemetry (token_count) stays out", "token_count" not in t)
+    check("Codex and Claude Code in the SAME file",
+          "question asked in codex" in t and "a long question" in t)
+    check("ordered by time (Codex 09:00 comes first)",
+          t.index("question asked in codex") < t.index("a long question"))
 
-    # Sem ~/.codex nada acontece: quem nao usa Codex nao paga nada.
-    m.CODEX_SESSIONS = os.path.join(root, "nao-existe")
-    check("ausencia de ~/.codex/sessions nao quebra", m.collect_codex() == {} or True)
+    # Without ~/.codex nothing happens: whoever doesn't use Codex pays nothing.
+    m.CODEX_SESSIONS = os.path.join(root, "does-not-exist")
+    check("absence of ~/.codex/sessions does not break", m.collect_codex() == {} or True)
     try:
         m.collect_codex()
-        check("collect_codex sem diretorio nao levanta", True)
+        check("collect_codex without the directory does not raise", True)
     except Exception as e:
-        check("collect_codex sem diretorio nao levanta", False, str(e))
+        check("collect_codex without the directory does not raise", False, str(e))
 
-print("PASS" if not fails else f"FALHOU: {len(fails)}")
+print("PASS" if not fails else f"FAILED: {len(fails)}")
 sys.exit(1 if fails else 0)

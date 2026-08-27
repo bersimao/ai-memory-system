@@ -19,7 +19,7 @@ DRY=0; REDO=0; LIMIT=0; DONE=0
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY=1 ;;
-    --redo)    REDO=1 ;;   # ignora o guard: re-destila histórico
+    --redo)    REDO=1 ;;   # bypasses the guard: re-distills history
     --limit=*) LIMIT="${a#*=}" ;;
   esac
 done
@@ -49,14 +49,14 @@ ts() { date -Iseconds; }
       [[ "$day" < "$cutoff" ]] && continue   # outside window (ISO dates sort lexically)
       [ -s "$t" ] || continue                # empty transcript
       dlog="$ctx/memory/${day}.md"
-      # NÃO basta o log existir. Mesmo bug do transcript, uma camada acima: um
-      # escritor ansioso grava um PARCIAL e o teste de existência trava o caminho
-      # completo para sempre. Um log escrito no meio da sessão não cobre o resto
-      # do dia; e os logs antigos foram destilados de transcripts que o Stop hook
-      # tinha cortado a 8-43%. Decide por PROCEDÊNCIA + atualidade:
-      #   log mais novo que o transcript            -> nada mudou, pula
-      #   log do backfill (marker) e desatualizado  -> refaz (fonte era pior)
-      #   log do agente e desatualizado             -> ESTENDE, preserva o texto
+      # The log EXISTING is not enough. Same bug as the transcript, one layer
+      # up: an eager writer records a PARTIAL and the existence test locks out
+      # the complete path forever. A log written mid-session does not cover the
+      # rest of the day; and old logs were distilled from transcripts the Stop
+      # hook had clipped to 8-43%. Decide by PROVENANCE + freshness:
+      #   log newer than the transcript            -> nothing changed, skip
+      #   backfill log (marker) and out of date    -> redo (its source was worse)
+      #   agent-written log and out of date        -> EXTEND, preserve the text
       mode="create"
       if [ -s "$dlog" ]; then
         if [ "$REDO" = 0 ] && [ ! "$t" -nt "$dlog" ]; then
@@ -83,16 +83,17 @@ ts() { date -Iseconds; }
         prompt="${prompt} ${dlog} already exists but was distilled from a truncated transcript (the old Stop hook kept only 8-43% of the day). Replace it entirely using the fuller transcript now available."
       fi
 
-      # Alvo de 2500 chars (era 1500): o backfill escreve ~52% dos daily logs, e os
-# dele têm mediana de 633 chars contra 2.400 dos escritos pelo agente na sessão
-# — perdiam a razão por trás da decisão. A leitura do transcript (a parte cara,
-# até ~47k tokens) já está paga; subir o alvo custa algumas centenas de tokens
-# de OUTPUT no tier haiku. Medido em 24/08.
-# Structured extraction from a transcript is low-risk → cheap tier.
+      # 2500-char target (was 1500): the backfill writes ~52% of the daily
+      # logs, and its logs had a median of 633 chars against 2,400 for the ones
+      # the agent wrote in-session — they lost the reasoning behind decisions.
+      # Reading the transcript (the expensive part, up to ~47k tokens) is
+      # already paid for; raising the target costs a few hundred OUTPUT tokens
+      # on the haiku tier. Measured on 08-24.
+      # Structured extraction from a transcript is low-risk → cheap tier.
       "$LLM_RUN" cheap "$prompt"; rc=$?
       if [ "$rc" = 3 ]; then
-        echo "  ABORTANDO o lote: cota/limite de gasto estourado (exit 3 do llm-run)."
-        echo "  Nada a ganhar tentando os dias restantes — todos morreriam igual."
+        echo "  ABORTING the batch: quota/spend limit exhausted (llm-run exit 3)."
+        echo "  Nothing to gain from trying the remaining days — all would die the same way."
         break 2
       fi
       [ "$rc" = 0 ] || echo "  backfill failed: $t"

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Self-check do split-memory.py. O invariante é MOVE: nada pode sumir."""
+"""Self-check for split-memory.py. The invariant is MOVE: nothing may vanish."""
 import json, os, subprocess, sys, tempfile
-S = os.path.expanduser("~/.claude/cron/split-memory.py")
+S = os.path.join(os.path.dirname(os.path.abspath(__file__)), "split-memory.py")
 fails = []
 def run(mem, plan, cap=2500):
     t = tempfile.mkdtemp()
@@ -10,95 +10,103 @@ def run(mem, plan, cap=2500):
     pj = os.path.join(t, "plan.json"); open(pj, "w").write(json.dumps(plan))
     r = subprocess.run([sys.executable, S, p, str(cap), pj], capture_output=True, text=True)
     return r.returncode, open(p).read(), ctx, r.stderr
-def chk(nome, cond, extra=""):
-    print(("ok   " if cond else "FAIL ") + nome + ("" if cond else f"  {extra}"))
-    if not cond: fails.append(nome)
+def chk(name, cond, extra=""):
+    print(("ok   " if cond else "FAIL ") + name + ("" if cond else f"  {extra}"))
+    if not cond: fails.append(name)
 
 MEM = """# Working Memory
 
-## Índice
-- [Ja existe](topics/ja-existe.md) — algo
+## Index
+- [Already there](topics/already-there.md) — something
 
-## Pendentes
-- item um bem comprido que ocupa espaco
-- item dois
+## Pending
+- item one, long enough to take up space
+- item two
 
-## Decidido
-- decisao antiga
+## Decided
+- an old decision
 """
-PLAN = {"moves": [{"heading": "## Pendentes", "slug": "pendentes",
-                   "index_line": "- [Pendentes](topics/pendentes.md) — o que esta aberto"}]}
+PLAN = {"moves": [{"heading": "## Pending", "slug": "pending",
+                   "index_line": "- [Pending](topics/pending.md) — what is open"}]}
 
-rc, novo, ctx, err = run(MEM, PLAN)
-chk("split aplica e sai 0", rc == 0, err)
-chk("secao saiu do MEMORY.md", "## Pendentes" not in novo)
-chk("linha de indice entrou", "topics/pendentes.md" in novo)
-tp = os.path.join(ctx, "topics", "pendentes.md")
-chk("topic page criada", os.path.exists(tp))
+rc, new, ctx, err = run(MEM, PLAN)
+chk("split applies and exits 0", rc == 0, err)
+chk("section left MEMORY.md", "## Pending" not in new)
+chk("index line went in", "topics/pending.md" in new)
+tp = os.path.join(ctx, "topics", "pending.md")
+chk("topic page created", os.path.exists(tp))
 if os.path.exists(tp):
-    corpo = open(tp).read()
-    chk("conteudo preservado na topic page", "item um bem comprido" in corpo and "item dois" in corpo)
-    chk("frontmatter presente", corpo.startswith("---"))
+    body = open(tp).read()
+    chk("content preserved in the topic page", "item one, long enough" in body and "item two" in body)
+    chk("frontmatter present", body.startswith("---"))
 
-# nada pode sumir: toda linha do original vive em algum lugar
+# nothing may vanish: every line of the original lives somewhere
 if os.path.exists(tp):
-    todo = novo + open(tp).read()
-    sumiu = [l for l in MEM.splitlines() if l.strip() and l.strip() not in todo]
-    chk("NENHUMA linha do original sumiu", not sumiu, str(sumiu[:1]))
+    combined = new + open(tp).read()
+    gone = [l for l in MEM.splitlines() if l.strip() and l.strip() not in combined]
+    chk("NO line of the original vanished", not gone, str(gone[:1]))
+
+# legacy heading: a store written before the rename says "## Índice" — the
+# index lines must land under it, never under a duplicate "## Index".
+MEM_LEGACY = MEM.replace("## Index", "## Índice")
+rc, new, ctx, err = run(MEM_LEGACY, PLAN)
+chk("legacy '## Índice' heading still receives the index line",
+    rc == 0 and "topics/pending.md" in new and "## Index\n" not in new, err)
 
 # guards
-rc, _, _, err = run(MEM, {"moves": [{"heading": "## Nao Existe", "slug": "x",
+rc, _, _, err = run(MEM, {"moves": [{"heading": "## Does Not Exist", "slug": "x",
                                      "index_line": "- [x](topics/x.md) — y"}]})
-chk("heading inexistente -> recusa", rc == 2)
-rc, _, _, err = run(MEM, {"moves": [{"heading": "## Pendentes", "slug": "../fuga",
-                                     "index_line": "- [x](topics/../fuga.md) — y"}]})
-chk("slug com path traversal -> recusa", rc == 2)
-rc, _, _, err = run(MEM, {"moves": [{"heading": "## Pendentes", "slug": "pendentes",
-                                     "index_line": "- [x](topics/OUTRO.md) — y"}]})
-chk("index_line apontando pro arquivo errado -> recusa", rc == 2)
+chk("missing heading -> refuses", rc == 2)
+rc, _, _, err = run(MEM, {"moves": [{"heading": "## Pending", "slug": "../escape",
+                                     "index_line": "- [x](topics/../escape.md) — y"}]})
+chk("slug with path traversal -> refuses", rc == 2)
+rc, _, _, err = run(MEM, {"moves": [{"heading": "## Pending", "slug": "pending",
+                                     "index_line": "- [x](topics/OTHER.md) — y"}]})
+chk("index_line pointing at the wrong file -> refuses", rc == 2)
 rc, _, _, err = run(MEM, {"moves": []})
-chk("plano vazio -> recusa", rc == 2)
+chk("empty plan -> refuses", rc == 2)
 
-# guard do global: caminho fora de projects/ tem que ser recusado
+# global guard: a path outside projects/ must be refused
 t = tempfile.mkdtemp(); g = os.path.join(t, "context"); os.makedirs(g)
 gp = os.path.join(g, "MEMORY.md"); open(gp, "w").write(MEM)
 pj = os.path.join(t, "p.json"); open(pj, "w").write(json.dumps(PLAN))
 r = subprocess.run([sys.executable, S, gp, "4000", pj], capture_output=True, text=True)
-chk("MEMORY.md global -> recusa (nao tem topics/)", r.returncode == 2, r.stderr[:60])
+chk("global MEMORY.md -> refuses (has no topics/)", r.returncode == 2, r.stderr[:60])
 
-# Um plano que PERDE conteudo nao pode escrever byte nenhum: a verificacao
-# acontece antes da gravacao, entao nem MEMORY.md nem topic page mudam.
-MEM2 = MEM.replace("## Decidido\n- decisao antiga\n", "## Decidido\n- decisao antiga\n")
+# A plan that LOSES content must not write a single byte: verification happens
+# before writing, so neither MEMORY.md nor any topic page changes.
 t = tempfile.mkdtemp(); ctx2 = os.path.join(t, "projects", "p", "context"); os.makedirs(ctx2)
-p2 = os.path.join(ctx2, "MEMORY.md"); open(p2, "w").write(MEM2)
-# heading que existe, mas o "move" e sabotado apontando um slug cujo arquivo
-# ficaria fora do destino verificado -> simulamos perda truncando via secao vazia
+p2 = os.path.join(ctx2, "MEMORY.md"); open(p2, "w").write(MEM)
+# moving the Index section itself is the degenerate case: its heading exists,
+# but pulling it out interacts with the index-line insertion
 pj2 = os.path.join(t, "plan.json")
-open(pj2, "w").write(json.dumps({"moves": [{"heading": "## Índice", "slug": "indice",
-      "index_line": "- [Indice](topics/indice.md) — x"}]}))
-antes = open(p2).read()
+open(pj2, "w").write(json.dumps({"moves": [{"heading": "## Index", "slug": "index",
+      "index_line": "- [Index](topics/index.md) — x"}]}))
+before = open(p2).read()
 r = subprocess.run([sys.executable, S, p2, "2500", pj2], capture_output=True, text=True)
-depois = open(p2).read()
-chk("mover o proprio Índice nao corrompe (ou recusa, ou preserva tudo)",
-    r.returncode != 0 or all(l.strip() in depois + open(os.path.join(ctx2,'topics','indice.md')).read()
-                             for l in antes.splitlines() if l.strip()))
+after = open(p2).read()
+tp2 = os.path.join(ctx2, 'topics', 'index.md')
+moved = open(tp2).read() if os.path.exists(tp2) else ""
+chk("moving the Index itself does not corrupt (refuses, or preserves all)",
+    r.returncode != 0 or all(l.strip() in after + moved
+                             for l in before.splitlines() if l.strip()))
 
-# ISOLAMENTO: plano feito sobre um snapshot nao pode ser aplicado depois que
-# outra sessao escreveu — moveria secao que ninguem inspecionou.
+# ISOLATION: a plan made from a snapshot must not be applied after another
+# session wrote — it would move a section nobody inspected.
 import hashlib
 t = tempfile.mkdtemp(); ctx3 = os.path.join(t, "projects", "p", "context"); os.makedirs(ctx3)
 p3 = os.path.join(ctx3, "MEMORY.md"); open(p3, "w").write(MEM)
 h = hashlib.sha256(MEM.encode()).hexdigest()
 pj3 = os.path.join(t, "plan.json"); open(pj3, "w").write(json.dumps(PLAN))
-open(p3, "w").write(MEM.replace("- item dois", "- item dois\n- ESCRITA CONCORRENTE"))
+open(p3, "w").write(MEM.replace("- item two", "- item two\n- CONCURRENT WRITE"))
 r = subprocess.run([sys.executable, S, p3, "2500", pj3, h], capture_output=True, text=True)
-chk("plano obsoleto -> recusa", r.returncode == 2, r.stderr[:70])
-chk("escrita concorrente sobrevive", "ESCRITA CONCORRENTE" in open(p3).read())
+chk("stale plan -> refuses", r.returncode == 2, r.stderr[:70])
+chk("concurrent write survives", "CONCURRENT WRITE" in open(p3).read())
 
-# hash correto -> aplica normalmente
+# correct hash -> applies normally
 open(p3, "w").write(MEM)
 r = subprocess.run([sys.executable, S, p3, "2500", pj3, h], capture_output=True, text=True)
-chk("hash correto -> aplica", r.returncode == 0, r.stderr[:70])
+chk("correct hash -> applies", r.returncode == 0, r.stderr[:70])
 
-print("PASS" if not fails else f"FALHOU: {len(fails)}")
+print("PASS" if not fails else f"FAILED: {len(fails)}")
 sys.exit(1 if fails else 0)

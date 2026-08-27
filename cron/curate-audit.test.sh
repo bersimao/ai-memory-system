@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Self-check for curate.sh's audit_and_veto (pendência 4). No LLM, no cron.
+# Self-check for curate.sh's audit_and_veto. No LLM, no cron.
 # Run: bash ~/.claude/cron/curate-audit.test.sh
 set -uo pipefail
 
@@ -10,28 +10,28 @@ STAMP="testrun1"
 
 # Extract the function under test. Guard against a silent empty extraction —
 # an empty probe looks exactly like a passing one (learned 2026-08-23).
-# audit_and_veto depende de chars() — extrair as DUAS, senão o teste roda contra
-# uma função quebrada e os vetos passam pelo motivo errado (visto 2026-08-23).
+# audit_and_veto depends on chars() — extract BOTH, or the test runs against a
+# broken function and the vetoes pass for the wrong reason (seen 2026-08-23).
 fn="$(sed -n '/^chars() {/p;/^register() {/,/^}/p;/^audit_and_veto() {/,/^}/p' "$SRC")"
 [ -n "$fn" ] || { echo "FAIL: could not extract from $SRC"; exit 1; }
 grep -q 'CUT_VETO' <<<"$fn" || { echo "FAIL: extracted text is not the function"; exit 1; }
-grep -q '^chars() {' <<<"$fn" || { echo "FAIL: chars() nao foi extraida"; exit 1; }
-grep -q '^register() {' <<<"$fn" || { echo "FAIL: register() nao foi extraida"; exit 1; }
+grep -q '^chars() {' <<<"$fn" || { echo "FAIL: chars() was not extracted"; exit 1; }
+grep -q '^register() {' <<<"$fn" || { echo "FAIL: register() was not extracted"; exit 1; }
 eval "$fn"
-# sanidade: a função extraída realmente mede?
-[ "$(chars "$SRC")" -gt 100 ] || { echo "FAIL: chars() extraida nao mede nada"; exit 1; }
+# sanity: does the extracted function actually measure?
+[ "$(chars "$SRC")" -gt 100 ] || { echo "FAIL: extracted chars() measures nothing"; exit 1; }
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 fail=0
 check() { # <name> <expected-substring> <expected-final-size> <file>
-  if ! grep -q -- "$2" <<<"$OUT"; then echo "FAIL $1: esperava '$2' em: $OUT"; fail=1; return; fi
+  if ! grep -q -- "$2" <<<"$OUT"; then echo "FAIL $1: expected '$2' in: $OUT"; fail=1; return; fi
   local got; got="$(wc -c <"$4")"
-  if [ "$got" != "$3" ]; then echo "FAIL $1: tamanho final $got, esperava $3"; fail=1; return; fi
+  if [ "$got" != "$3" ]; then echo "FAIL $1: final size $got, expected $3"; fail=1; return; fi
   echo "ok   $1"
 }
 
-# Caminho REALISTA de store de projeto: a dica de overflow casa em
-# */projects/*/context/MEMORY.md, então o fixture precisa ter essa forma.
+# REALISTIC project-store path: the overflow hint matches
+# */projects/*/context/MEMORY.md, so the fixture needs that shape.
 mk() { # <name> <before> <after> [cap] -> sets f
   mkdir -p "$T/projects/$1/context"
   f="$T/projects/$1/context/MEMORY.md"
@@ -41,89 +41,89 @@ mk() { # <name> <before> <after> [cap] -> sets f
   SIZES="$2|${4:-2500}|$f|$1"
 }
 
-# o veto tem que PRESERVAR a proposta, senão o alerta é inacionável
+# the veto must PRESERVE the proposal, or the alert is unactionable
 mk vetoprop 1000 300; OUT="$(audit_and_veto)"
 if [ -f "$f.rejected-$STAMP" ] && [ "$(wc -c <"$f.rejected-$STAMP")" = 300 ]; then
-  echo "ok   veto preserva a proposta em .rejected"
+  echo "ok   veto preserves the proposal in .rejected"
 else
-  echo "FAIL veto nao preservou a proposta (.rejected ausente ou errado)"; fail=1
+  echo "FAIL veto did not preserve the proposal (.rejected missing or wrong)"; fail=1
 fi
-grep -q 'diff ' <<<"$OUT" || { echo "FAIL alerta do veto nao traz o comando de diff"; fail=1; }
-# aceitar tem que CONSUMIR o artefato, senão o comando nao e idempotente:
-# aceite -> memoria editada -> mesmo cp de novo apaga as edicoes novas.
+grep -q 'diff ' <<<"$OUT" || { echo "FAIL veto alert carries no diff command"; fail=1; }
+# accepting must CONSUME the artifact, or the command is not idempotent:
+# accept -> memory edited later -> the same cp again wipes the new edits.
 grep -q 'accept: cp .* && rm ' <<<"$OUT" \
-  && echo "ok   aceitar consome o .rejected (cp && rm)" \
-  || { echo "FAIL aceitar nao remove o .rejected"; fail=1; }
+  && echo "ok   accepting consumes the .rejected (cp && rm)" \
+  || { echo "FAIL accepting does not remove the .rejected"; fail=1; }
 
-mk shrink10 1000 900;  OUT="$(audit_and_veto)"; check "corte 10%% = ok"        "ok shrink10"   900  "$f"
-mk shrink35 1000 650;  OUT="$(audit_and_veto)"; check "corte 35%% = alerta"    "large cut in curate"  650  "$f"
-mk shrink60 1000 400;  OUT="$(audit_and_veto)"; check "corte 60%% = VETO"      "CURATE VETO"   1000 "$f"
-mk emptied  1000 0;    OUT="$(audit_and_veto)"; check "esvaziado = VETO"       "CURATE VETO"   1000 "$f"
-mk grew     1000 1500; OUT="$(audit_and_veto)"; check "cresceu = ok"           "ok grew"       1500 "$f"
+mk shrink10 1000 900;  OUT="$(audit_and_veto)"; check "10%% cut = ok"          "ok shrink10"   900  "$f"
+mk shrink35 1000 650;  OUT="$(audit_and_veto)"; check "35%% cut = alert"       "large cut in curate"  650  "$f"
+mk shrink60 1000 400;  OUT="$(audit_and_veto)"; check "60%% cut = VETO"        "CURATE VETO"   1000 "$f"
+mk emptied  1000 0;    OUT="$(audit_and_veto)"; check "emptied = VETO"         "CURATE VETO"   1000 "$f"
+mk grew     1000 1500; OUT="$(audit_and_veto)"; check "grew = ok"              "ok grew"       1500 "$f"
 
-# limite exato: 50% deve vetar (>=), 49% não
-mk exact50  1000 500;  OUT="$(audit_and_veto)"; check "corte 50%% = VETO"      "CURATE VETO"   1000 "$f"
-mk under50  1000 510;  OUT="$(audit_and_veto)"; check "corte 49%% = so alerta" "large cut in curate"  510  "$f"
+# exact boundary: 50% must veto (>=), 49% must not
+mk exact50  1000 500;  OUT="$(audit_and_veto)"; check "50%% cut = VETO"        "CURATE VETO"   1000 "$f"
+mk under50  1000 510;  OUT="$(audit_and_veto)"; check "49%% cut = alert only"  "large cut in curate"  510  "$f"
 
-# o veto num arquivo acima do cap tem que mandar QUEBRAR, não comprimir —
-# senão curate corta / veto restaura / nada melhora, toda semana.
+# a veto on a file over its cap must say SPLIT, not compress — otherwise
+# curate cuts / the veto restores / nothing improves, every single week.
 mk bloated 7600 2500 2500; OUT="$(audit_and_veto)"
 grep -q 'SPLIT into topics/' <<<"$OUT" \
-  && echo "ok   veto acima do cap sugere quebrar em topics/" \
-  || { echo "FAIL veto acima do cap nao sugeriu quebrar"; fail=1; }
-# o global NÃO tem topics/ — a dica lá tem que mandar rotear para skill via kb
+  && echo "ok   over-cap veto suggests splitting into topics/" \
+  || { echo "FAIL over-cap veto did not suggest splitting"; fail=1; }
+# the global layer has NO topics/ — its hint must say to route the fact out
 gf="$T/global-MEMORY.md"
 head -c 6000 /dev/zero | tr '\0' 'a' >"$gf"; cp -p "$gf" "$gf.bak"
 head -c 2000 /dev/zero | tr '\0' 'b' >"$gf"
 SIZES="6000|4000|$gf|global"; OUT="$(audit_and_veto)"
 grep -q 'belongs somewhere else' <<<"$OUT" \
-  && echo "ok   veto no global manda rotear para fora, nao comprimir" \
-  || { echo "FAIL veto no global nao deu a saida certa"; fail=1; }
+  && echo "ok   global veto says route the overflow out, not compress" \
+  || { echo "FAIL global veto did not give the right exit"; fail=1; }
 grep -q 'SPLIT into topics/' <<<"$OUT" \
-  && { echo "FAIL veto no global sugeriu topics/ (nao existe la)"; fail=1; } \
-  || echo "ok   veto no global NAO sugere topics/"
+  && { echo "FAIL global veto suggested topics/ (does not exist there)"; fail=1; } \
+  || echo "ok   global veto does NOT suggest topics/"
 
-# e um veto DENTRO do cap não deve poluir com a dica
+# and a veto within the cap must not pollute the alert with the hint
 mk small 2000 800 2500; OUT="$(audit_and_veto)"
 grep -q 'SPLIT into topics/' <<<"$OUT" \
-  && { echo "FAIL veto dentro do cap nao devia sugerir quebrar"; fail=1; } \
-  || echo "ok   veto dentro do cap nao sugere quebrar"
+  && { echo "FAIL under-cap veto should not suggest splitting"; fail=1; } \
+  || echo "ok   under-cap veto does not suggest splitting"
 
-# --- artefatos do veto -------------------------------------------------------
-# curate APAGA o arquivo: a proposta é a exclusão, não há o que copiar. O alerta
-# não pode mandar diff/cp contra um .rejected inexistente.
+# --- veto artifacts ----------------------------------------------------------
+# curate DELETES the file: the proposal is the deletion, there is nothing to
+# copy. The alert must not point diff/cp at a nonexistent .rejected.
 mk deleted 3000 1 2500; rm -f "$f"
 OUT="$(audit_and_veto 2>&1)"
-grep -q 'cannot stat' <<<"$OUT" && { echo "FAIL veto com arquivo apagado ainda tenta copiar"; fail=1; } \
-  || echo "ok   veto com arquivo apagado nao tenta copiar"
+grep -q 'cannot stat' <<<"$OUT" && { echo "FAIL veto with deleted file still tries to copy"; fail=1; } \
+  || echo "ok   veto with deleted file does not try to copy"
 grep -q 'proposal was to DELETE' <<<"$OUT" \
-  && echo "ok   alerta explica que a proposta era exclusao" \
-  || { echo "FAIL alerta nao explica a exclusao"; fail=1; }
-[ -f "$f" ] && echo "ok   arquivo apagado foi restaurado" || { echo "FAIL nao restaurou"; fail=1; }
+  && echo "ok   alert explains the proposal was a deletion" \
+  || { echo "FAIL alert does not explain the deletion"; fail=1; }
+[ -f "$f" ] && echo "ok   deleted file was restored" || { echo "FAIL did not restore"; fail=1; }
 
-# .rejected de rodada anterior nao pode sobreviver ao register()
+# a .rejected from a previous round must not survive register()
 mk stale 3000 2900 2500
-echo "PROPOSTA VELHA" > "$f.rejected-anterior"
+echo "OLD PROPOSAL" > "$f.rejected-previous"
 TARGETS=""; SIZES=""
 register "$f" 2500 stale >/dev/null
-[ -f "$f.rejected-anterior" ] && { echo "FAIL .rejected velho sobreviveu ao register"; fail=1; } \
-  || echo "ok   register descarta .rejected de rodada anterior"
+[ -f "$f.rejected-previous" ] && { echo "FAIL old .rejected survived register"; fail=1; } \
+  || echo "ok   register discards a previous round's .rejected"
 
-# Um alerta de rodada anterior guarda um caminho literal. Depois de uma rodada
-# nova, esse caminho tem que NAO existir — senao o aceite antigo aplica em
-# silencio uma proposta que o usuario nunca revisou.
+# An alert from a previous round stores a literal path. After a new round that
+# path must NOT exist — or the old acceptance silently applies a proposal the
+# user never reviewed.
 mk aliasing 3000 1000 2500
-STAMP="semana1"; audit_and_veto >/dev/null
-velho="$f.rejected-semana1"
-[ -f "$velho" ] || { echo "FAIL rodada 1 nao criou o artefato carimbado"; fail=1; }
-cp -p "$f.bak" "$f"                      # simula a semana passando
-STAMP="semana2"; TARGETS=""; SIZES=""
-register "$f" 2500 aliasing >/dev/null   # rodada nova limpa a anterior
+STAMP="week1"; audit_and_veto >/dev/null
+old="$f.rejected-week1"
+[ -f "$old" ] || { echo "FAIL round 1 did not create the stamped artifact"; fail=1; }
+cp -p "$f.bak" "$f"                      # simulate the week passing
+STAMP="week2"; TARGETS=""; SIZES=""
+register "$f" 2500 aliasing >/dev/null   # a new round clears the previous one
 head -c 500 /dev/zero | tr '\0' 'c' >"$f"
 audit_and_veto >/dev/null
-[ -f "$velho" ] && { echo "FAIL caminho do alerta ANTIGO ainda existe (aceite silencioso)"; fail=1; } \
-  || echo "ok   alerta antigo nao alcanca a proposta nova"
-[ -f "$f.rejected-semana2" ] && echo "ok   rodada nova tem artefato proprio" \
-  || { echo "FAIL rodada nova nao criou artefato"; fail=1; }
+[ -f "$old" ] && { echo "FAIL the OLD alert's path still exists (silent acceptance)"; fail=1; } \
+  || echo "ok   the old alert cannot reach the new proposal"
+[ -f "$f.rejected-week2" ] && echo "ok   the new round has its own artifact" \
+  || { echo "FAIL the new round created no artifact"; fail=1; }
 
-[ "$fail" = 0 ] && echo "PASS" || { echo "FALHOU"; exit 1; }
+[ "$fail" = 0 ] && echo "PASS" || { echo "FAILED"; exit 1; }

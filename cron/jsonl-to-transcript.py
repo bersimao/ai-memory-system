@@ -22,10 +22,10 @@ is revertible; run it on a clean tree.
 import json, os, glob, sys, datetime, collections, subprocess
 
 ROOT = os.path.expanduser("~/.claude/projects")
-# Codex grava rollouts em ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl, e o cwd
-# vive no session_meta em vez de no nome do diretorio. Mesmo projeto, mesma
-# memoria: os dois agentes escrevem no MESMO transcript do dia, ordenados por
-# timestamp. Ausente = nada acontece; ninguem precisa ter Codex instalado.
+# Codex writes rollouts to ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl, and
+# the cwd lives in session_meta rather than in the directory name. Same
+# project, same memory: both agents write to the SAME day transcript, ordered
+# by timestamp. Absent = nothing happens; nobody needs Codex installed.
 CODEX_SESSIONS = os.path.expanduser("~/.codex/sessions")
 STORE_RESOLVER = os.path.expanduser("~/.claude/hooks/project-store.js")
 TODAY = datetime.date.today().isoformat()
@@ -34,10 +34,11 @@ TODAY = datetime.date.today().isoformat()
 # 2026-08-23: raised 40k -> 250k. Measured across the 79 days still held in the
 # native .jsonl: p50 24k, p90 112k, max 220k — the old cap truncated 30 of them.
 MAX_CHARS = 250_000
-# Assinatura da própria saída. Arquivo SEM ela veio do Stop hook
-# (transcript-capture.js), que grava só o último par user/assistant por parada —
-# medido em 8-43% do dia. Enquanto o skip-guard protegia esse parcial, a extração
-# completa nunca rodava: 79 dias pulados, 0 escritos, desde que o script existe.
+# Signature of this script's own output. A file WITHOUT it came from the Stop
+# hook (transcript-capture.js), which records only the last user/assistant
+# pair per stop — measured at 8-43% of the day. While the skip-guard protected
+# that partial, the complete extraction never ran: 79 days skipped, 0 written,
+# for as long as the script existed.
 MARKER = "<!-- auto-extracted"
 SKIP_TYPES = {"attachment", "last-prompt", "queue-operation", "system"}
 NOISE_PREFIXES = (
@@ -99,15 +100,15 @@ _store_cache = {}
 
 
 def resolve_store(cwd):
-    """cwd -> NOME do store (basename), nao caminho absoluto.
+    """cwd -> store NAME (basename), not an absolute path.
 
-    Delega a ancoragem ao project-store.js de proposito: a ordem e
-    pin -> git root -> cwd, e reimplementar isso aqui em Python criaria duas
-    verdades que divergem no primeiro pin.
+    Anchoring is delegated to project-store.js on purpose: the order is
+    pin -> git root -> cwd, and reimplementing that here in Python would
+    create two truths that diverge at the first pin.
 
-    Devolve so o basename porque quem chama junta com ROOT. Devolver o caminho
-    absoluto furava o sandbox dos testes (que trocam ROOT por um tmpdir) e
-    fazia o teste escrever em transcript de verdade."""
+    Returns only the basename because the caller joins it with ROOT.
+    Returning the absolute path punched through the test sandbox (which swaps
+    ROOT for a tmpdir) and made the test write to a real transcript."""
     if cwd in _store_cache:
         return _store_cache[cwd]
     out = None
@@ -146,8 +147,9 @@ def collect_codex():
                 if e.get("type") == "session_meta":
                     cwd = payload.get("cwd")
                     continue
-                # So user_message/agent_message: o resto e telemetria, tool call
-                # e reasoning. Mesmo criterio do lado Claude Code (user+assistant).
+                # Only user_message/agent_message: the rest is telemetry, tool
+                # calls and reasoning. Same criterion as the Claude Code side
+                # (user+assistant).
                 kind = payload.get("type")
                 if kind == "user_message":
                     role = "user"
@@ -169,8 +171,9 @@ def collect_codex():
                 entries.append((dt, role, text))
         if not cwd or not entries:
             continue
-        # Sessao rodada no Windows (cwd "C:\...") nao resolve aqui; resolve_store
-        # devolve None e o dia e ignorado em vez de virar um store de lixo.
+        # A session run on Windows (cwd "C:\...") does not resolve here;
+        # resolve_store returns None and the day is ignored instead of
+        # becoming a junk store.
         name = resolve_store(cwd)
         if not name:
             continue
@@ -185,9 +188,9 @@ def main():
     force = "--force" in sys.argv
     written = skipped = 0
 
-    # Une as duas origens ANTES de escrever. Um dia em que se trabalhou nos dois
-    # agentes vira UM transcript, ordenado por timestamp — nao dois arquivos
-    # concorrendo pelo mesmo nome, nem o segundo sobrescrevendo o primeiro.
+    # Merge the two sources BEFORE writing. A day worked in both agents
+    # becomes ONE transcript, ordered by timestamp — not two files competing
+    # for the same name, nor the second overwriting the first.
     merged = collections.defaultdict(lambda: collections.defaultdict(list))
     for pd in sorted(glob.glob(os.path.join(ROOT, "*"))):
         if not os.path.isdir(pd):
@@ -215,9 +218,9 @@ def main():
                 continue
             entries.sort(key=lambda r: r[0])
             parts, total, cut = ["<!-- auto-extracted from native session jsonl -->"], 0, False
-            # O MARKER (prefixo) tem que continuar identico: a regra de
-            # procedencia em main() depende dele para distinguir extracao
-            # completa de parcial do Stop hook.
+            # The MARKER (prefix) must stay identical: the provenance rule in
+            # main() depends on it to tell a complete extraction from a Stop
+            # hook partial.
             for dt, role, text in entries:
                 chunk = f"\n## {dt.strftime('%H:%M:%S')}\n**{role}:** {text}"
                 if total + len(chunk) > MAX_CHARS:
@@ -229,17 +232,17 @@ def main():
                 parts.append(f"\n<!-- truncated at {MAX_CHARS} chars -->")
             new_text = "\n".join(parts) + "\n"
 
-            # Decide pela PROCEDÊNCIA do arquivo, não pela sua existência:
-            #  - sem marker            -> parcial do Stop hook: sobrescrever
-            #  - com marker e >= atual -> nada a ganhar: pular
-            #  - com marker e MENOR    -> extração anterior pegou o dia pela metade
-            #    (sessão cruzando a meia-noite, .jsonl ainda crescendo): refazer
+            # Decide by the file's PROVENANCE, not its existence:
+            #  - no marker               -> Stop hook partial: overwrite
+            #  - marker and >= current   -> nothing to gain: skip
+            #  - marker and SMALLER      -> the previous extraction caught half
+            #    the day (session crossing midnight, .jsonl still growing): redo
             if old and not force and old.startswith(MARKER) and len(new_text) <= len(old):
                 skipped += 1
                 continue
             prev = len(old)
             delta = f"{prev:,} -> {len(new_text):,}" if prev else f"{len(new_text):,}"
-            why = "" if not prev else (" [sem marker]" if not old.startswith(MARKER) else " [re-extracao]")
+            why = "" if not prev else (" [no marker]" if not old.startswith(MARKER) else " [re-extraction]")
             print(f"{'would write' if dry else 'write'} {dest}  ({delta} chars, {len(entries)} msgs){why}")
             if not dry:
                 os.makedirs(tdir, exist_ok=True)

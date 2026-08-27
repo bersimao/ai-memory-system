@@ -10,47 +10,50 @@
 #   - agentic file access: must be able to READ and EDIT the files named in the
 #     prompt (paths under ~/.claude/) without interactive approval
 #   - non-zero exit on failure (callers log-and-continue)
-#   - EXIT 3 = cota/limite de gasto estourado. Distinto de "essa chamada falhou":
-#     significa que TODA chamada seguinte vai falhar igual, e o caller deve
-#     ABORTAR o lote. Em 24/08 o backfill tratou o limite como falha comum e
-#     seguiu tentando: 57 chamadas idênticas, todas mortas na porta.
+#   - EXIT 3 = account quota / spend limit exhausted. Distinct from "this call
+#     failed": it means EVERY following call will fail the same way, so the
+#     caller must ABORT the batch. On 08-24 the backfill treated the limit as an
+#     ordinary failure and kept going: 57 identical calls, all dead on arrival.
 # Per-backend notes: docs/model-agnostic.md in the memory-system repo
 set -uo pipefail
 
 tier="${1:?usage: llm-run <cheap|smart> <prompt>}"
 prompt="${2:?usage: llm-run <cheap|smart> <prompt>}"
 
-CLAUDE="$HOME/.local/bin/claude"
+# PATH first: cron environments carry a minimal PATH, and claude installs
+# land in different places (npm global, brew, ~/.local/bin). Hardcoding the
+# last one broke every cron LLM call for anyone who installed differently.
+CLAUDE="$(command -v claude || echo "$HOME/.local/bin/claude")"
 
-# --setting-sources '' : NÃO carregar user/project/local settings nesta chamada.
-# Sem isto, toda sessão headless herda TODOS os hooks de sessão — inclusive os de
-# plugin. Medido em 24/08: um lote de 96 backfills disparou 45 sessões com
-# veredicto do gate do Codex, ou seja, uma REVISÃO DE CÓDIGO completa por daily
-# log escrito. O custo invisível era ordens de grandeza maior que o haiku.
-# Não usar `--bare`: ele também força auth por ANTHROPIC_API_KEY e quebra o OAuth
-# do `claude login`. Verificado: com esta flag a auth continua funcionando e
-# nenhum hook dispara.
+# --setting-sources '' : do NOT load user/project/local settings for this call.
+# Without it, every headless session inherits ALL session hooks — plugin hooks
+# included. Measured on 08-24: a batch of 96 backfills fired 45 sessions with a
+# Codex-gate verdict, i.e. one full CODE REVIEW per daily log written. The
+# invisible cost was orders of magnitude larger than the haiku call itself.
+# Not `--bare`: that also forces ANTHROPIC_API_KEY auth and breaks the OAuth
+# from `claude login`. Verified: with this flag auth keeps working and no hook
+# fires.
 NOHOOKS=(--setting-sources '')
 
 # --dangerously-skip-permissions: the ~/.claude/ sensitive-file gate ignores
 # acceptEdits/permissions.allow, so headless edits there are silently denied
 # without it. Claude-Code-specific; other CLIs have their own auto-approve flag.
-# Sem `exec`: precisamos INSPECIONAR a saída para distinguir "falhou" de
-# "acabou a cota". Com exec o processo é substituído e não há como olhar.
-# Backoff do rate limit quando o servidor NÃO diz quanto esperar.
+# No `exec`: we need to INSPECT the output to tell "failed" from "quota ran
+# out". With exec the process is replaced and there is nothing left to look at.
+# Rate-limit backoff for when the server does NOT say how long to wait.
 RATE_BACKOFF="${LLM_RUN_BACKOFF:-30}"
-# Teto: acima disso dormir num cron é pior que abortar e deixar a próxima
-# rodada pegar o serviço já recuperado.
+# Ceiling: past this, sleeping inside a cron is worse than aborting and letting
+# the next round find the service already recovered.
 RATE_MAX_WAIT="${LLM_RUN_MAX_WAIT:-300}"
 
-# Extrai o atraso que o SERVIDOR pediu ("retry after 60s", "Retry-After: 60",
-# "try again in 45 seconds"). Ignorar isso é martelar (retentar antes do prazo)
-# ou desperdiçar (esperar demais). Vazio = servidor não disse.
+# Extract the delay the SERVER asked for ("retry after 60s", "Retry-After: 60",
+# "try again in 45 seconds"). Ignoring it means hammering (retrying before the
+# deadline) or wasting time (waiting too long). Empty = the server didn't say.
 advised_delay() {
   local t="$1" span num unit
-  # Retry-After em formato HTTP-date ("Wed, 21 Oct 2026 07:28:00 GMT") NÃO é
-  # segundos. Ler o "21" ali dava 21s e retentava cedo demais — martelando.
-  # Sem converter data com segurança, é melhor não adivinhar: cai no default.
+  # Retry-After in HTTP-date format ("Wed, 21 Oct 2026 07:28:00 GMT") is NOT
+  # seconds. Reading the "21" there gave 21s and retried too early — hammering.
+  # Without a safe date conversion, better not to guess: fall to the default.
   case "$t" in
     *GMT*|*UTC*|*Mon,*|*Tue,*|*Wed,*|*Thu,*|*Fri,*|*Sat,*|*Sun,*) return 0 ;;
   esac
@@ -58,18 +61,18 @@ advised_delay() {
     | grep -oiE '(retry[-_ ]?after|try again in|please wait|wait)[^0-9]{0,15}[0-9]+ ?(ms|secs?|seconds?|mins?|minutes?|hrs?|hours?|[smh])?' \
     | head -1)"
   [ -n "$span" ] || return 0
-  # número: o ÚLTIMO do trecho (a palavra-chave não tem dígitos, mas se tiver,
-  # o valor é sempre o que vem por último).
+  # number: the LAST one in the span (the keyword has no digits, but if it
+  # ever does, the value is always whatever comes last).
   num="$(printf '%s' "$span" | grep -oE '[0-9]+' | tail -1)"
   [ -n "$num" ] || return 0
-  # unidade: ignorá-la fazia "2 minutes" virar 2 segundos.
+  # unit: ignoring it turned "2 minutes" into 2 seconds.
   unit="$(printf '%s' "$span" | grep -oiE '(ms|secs?|seconds?|mins?|minutes?|hrs?|hours?|[smh])$' | tr 'A-Z' 'a-z')"
   case "$unit" in
     ms)                          num=$(( (num + 999) / 1000 )) ;;
     m|min|mins|minute|minutes)   num=$(( num * 60 )) ;;
     h|hr|hrs|hour|hours)         num=$(( num * 3600 )) ;;
   esac
-  # "retry after 0" dormiria 0s = retentar na hora = martelar.
+  # "retry after 0" would sleep 0s = retry immediately = hammering.
   [ "$num" -lt 1 ] && num=1
   printf '%s' "$num"
 }
@@ -83,23 +86,24 @@ run_tier() {
   printf '%s\n' "$out"
   [ "$rc" -eq 0 ] && return 0
 
-  # Cota estourada só é considerada quando a chamada REALMENTE falhou. A saída
-  # inclui a resposta do modelo, e resumos falam de "limite" o tempo todo
-  # ("bem abaixo do limite de 1500 chars", "rate-limit não gera log"): casar
-  # substring numa chamada bem-sucedida abortaria o lote sem motivo.
-  # `cc_cli_limit_message` é o marcador do próprio CLI na URL e é o âncora mais
-  # específico; os demais cobrem as variações de texto (mensal, sessão, 5h).
+  # Quota exhaustion only counts when the call REALLY failed. The output
+  # includes the model's reply, and summaries mention "limit" all the time
+  # ("well under the 1500-char limit", "rate-limit produces no log"): substring
+  # matching on a successful call would abort the batch for no reason.
+  # `cc_cli_limit_message` is the CLI's own marker in the URL and the most
+  # specific anchor; the others cover the text variants (monthly, session, 5h).
   if [ "$rc" -ne 0 ]; then
-    # (a) Marcadores inequívocos de cota GLOBAL da conta.
+    # (a) Unambiguous markers of the account's GLOBAL quota.
     case "$out" in
       *cc_cli_limit_message*|*"spend limit"*|*"usage limit"*) return 3 ;;
     esac
-    # (b) Demais "limit": só é cota se disser QUANDO reseta. Um limite global
-    #     sempre informa o horário de reset ("5-hour limit reached ∙ resets 3pm");
-    #     um limite POR CHAMADA não — "context limit reached", "prompt too long",
-    #     "rate limit, retry after 60s". Sem esta distinção, um único transcript
-    #     grande demais (MAX_CHARS subiu p/ 250k em 24/08) abortaria o lote
-    #     inteiro, quando o certo é falhar só aquele dia e seguir.
+    # (b) Other "limit" mentions: only quota if it says WHEN it resets. A
+    #     global limit always states the reset time ("5-hour limit reached ∙
+    #     resets 3pm"); a PER-CALL limit does not — "context limit reached",
+    #     "prompt too long", "rate limit, retry after 60s". Without this
+    #     distinction, a single oversized transcript (MAX_CHARS rose to 250k on
+    #     08-24) would abort the whole batch, when the right outcome is to fail
+    #     just that day and move on.
     case "$out" in
       *limit*)
         case "$out" in
@@ -108,10 +112,10 @@ run_tier() {
         ;;
     esac
 
-    # (c) Rate limit é RETENTÁVEL — não é falha da chamada nem cota da conta. O
-    #     serviço está pedindo para desacelerar; seguir direto para o próximo dia
-    #     é justamente martelar. Uma espera e UMA nova tentativa cobrem o blip;
-    #     se persistir, aborta o lote em vez de continuar batendo.
+    # (c) A rate limit is RETRYABLE — neither a failed call nor account quota.
+    #     The service is asking us to slow down; moving straight to the next
+    #     day is exactly the hammering it asked to stop. One wait and ONE retry
+    #     cover the blip; if it persists, abort the batch instead of pounding.
     case "$out" in
       *"rate limit"*|*"Rate limit"*|*"rate_limit"*|*429*|*overloaded*|*Overloaded*|*"retry after"*|*"Retry-After"*)
         if [ "$attempt" -eq 0 ]; then
@@ -119,18 +123,18 @@ run_tier() {
           wait_s="$(advised_delay "$out")"
           if [ -n "$wait_s" ]; then
             if [ "$wait_s" -gt "$RATE_MAX_WAIT" ] 2>/dev/null; then
-              echo "llm-run: servidor pediu ${wait_s}s (> ${RATE_MAX_WAIT}s) — abortando o lote em vez de dormir" >&2
+              echo "llm-run: server asked for ${wait_s}s (> ${RATE_MAX_WAIT}s) — aborting the batch instead of sleeping" >&2
               return 3
             fi
-            echo "llm-run: rate limit — servidor pediu ${wait_s}s, respeitando" >&2
+            echo "llm-run: rate limit — server asked for ${wait_s}s, honoring it" >&2
           else
             wait_s="$RATE_BACKOFF"
-            echo "llm-run: rate limit sem prazo informado — aguardando ${wait_s}s" >&2
+            echo "llm-run: rate limit with no stated delay — waiting ${wait_s}s" >&2
           fi
           sleep "$wait_s"
           continue
         fi
-        echo "llm-run: rate limit persistente — abortando o lote em vez de martelar o serviço" >&2
+        echo "llm-run: persistent rate limit — aborting the batch instead of hammering the service" >&2
         return 3
         ;;
     esac

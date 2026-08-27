@@ -95,11 +95,22 @@ you, stop here and nothing has happened.
 ./install.sh
 ```
 
-It will ask one question — whether to add the memory instructions to your Claude
-settings. **Answer `y`.** Without them the system records what you did but never
-remembers it, which is half a system.
+It will ask two questions:
+
+1. **Add the memory instructions to your Claude settings?** Answer `y`. Without
+   them the system records what you did but never remembers it, which is half a
+   system.
+2. **Register the scheduled maintenance in your crontab?** This is the daily
+   distill (transcripts → daily logs → memory) and the weekly curation. Worth
+   knowing before you answer: these jobs run the `claude` CLI headless with
+   permission prompts skipped (only on files under `~/.claude/`), and **they
+   spend your own Claude usage** — a small daily amount on the cheap model,
+   plus one weekly pass on the smart one. Answer `y` if that's fine; without a
+   schedule the transcripts pile up but the memory files never update.
 
 It keeps a backup of every file it touches, and re-running it is safe.
+(Non-interactive installs: `--yes` accepts the instructions, `--cron` the
+schedule — the second is a separate flag precisely because it spends quota.)
 
 ### Step 4 — Check it worked
 
@@ -130,7 +141,9 @@ found your project. It fills up as you work.
 - **After a few days** — start a session and Claude already knows the project:
   what you decided, what broke, what you're in the middle of.
 - **Once a week** — it tidies its own notes, and refuses any edit that would
-  delete too much.
+  delete too much. (This and the daily distill are the cron jobs from the
+  install's second question — they only run if you said `y`, and only while a
+  cron daemon is running; on WSL that may need `sudo service cron start`.)
 - **Across projects** — each project keeps its own notes, but you can ask about
   any of them from anywhere. *"How did we solve this at the other client?"*
   works even from an unrelated folder; it searches everything you have worked
@@ -148,10 +161,12 @@ with any text editor.
 | `settings.json … is not valid JSON` | You have a broken settings file. It refused to touch it, on purpose — fix or rename that file, then re-run. |
 | `installation INCOMPLETE` | Something above it failed. The message says which. Nothing is half-applied. |
 | Claude doesn't seem to remember anything | The instructions step was skipped. Re-run `./install.sh --yes`. |
+| Transcripts exist but daily logs / memory never update | The schedule step was skipped, or no cron daemon is running. Re-run `./install.sh --cron`; on WSL also `sudo service cron start`. |
 
-To undo everything: delete `~/.claude/hooks/`, `~/.claude/cron/`, and the block
-marked `memory-system:instructions` in `~/.claude/CLAUDE.md`. Your memory files
-in `~/.claude/projects/` stay, and are just text.
+To undo everything: delete `~/.claude/hooks/`, `~/.claude/cron/`, remove the
+block marked `memory-system:instructions` in `~/.claude/CLAUDE.md`, and drop
+the cron entries with `crontab -l | grep -v memory-system | crontab -`. Your
+memory files in `~/.claude/projects/` stay, and are just text.
 
 ---
 
@@ -176,9 +191,14 @@ backend's name.
 
 The installer copies files into `~/.claude/`, registers the hooks in
 `settings.json`, appends the agent instructions to `~/.claude/CLAUDE.md` — and to
-`~/.codex/AGENTS.md` if you use Codex — and runs the self-checks. `--yes` accepts
-the instructions non-interactively; with no terminal it skips them rather than
-blocking. Re-running adds only what's missing, never duplicates hooks, never
+`~/.codex/AGENTS.md` if you use Codex — offers to register the two cron jobs
+(daily `distill.sh`, weekly `curate.sh`), and runs the self-checks. `--yes`
+accepts the instructions non-interactively; `--cron` accepts the schedule
+(kept separate because those jobs call the `claude` CLI headless, with
+`--dangerously-skip-permissions` scoped to `~/.claude/`, and spend your Claude
+usage); with no terminal it skips both rather than blocking. If `crontab` is
+missing it prints the two commands to schedule by other means (anacron, a
+systemd timer). Re-running adds only what's missing, never duplicates hooks, never
 drops hooks you already had, and backs up `settings.json` first. If that file
 exists but isn't valid JSON it refuses outright rather than overwriting it.
 
@@ -222,6 +242,9 @@ cron/
   backfill-daily-logs.sh  redistills days the agent never logged
   jsonl-to-transcript.py  complete-capture path from Claude Code's own .jsonl
   check-*.sh              tripwires: caps respected, hooks registered, recall used
+  backup-push.sh          optional: nightly commit+push of ~/.claude — active only
+                          if you make ~/.claude a git repo with an origin remote;
+                          otherwise it logs one line and exits
 scripts/
   mem                     the retrieval seam (search / expand / report)
   llm-run                 LLM invocation with quota and rate-limit handling

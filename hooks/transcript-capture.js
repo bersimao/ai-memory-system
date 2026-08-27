@@ -79,7 +79,13 @@ const { storeDir } = require('./project-store.js');
 const { dir: projectDir } = storeDir(cwd, transcriptPath);
 
 const dir = path.join(projectDir, 'context', 'transcripts');
-const today = new Date().toISOString().slice(0, 10);
+// LOCAL date, like every other component (memory-inject, daily-log-nudge,
+// jsonl-to-transcript). toISOString() is UTC: west of Greenwich an evening
+// session landed in TOMORROW's transcript, and backfill distilled it into the
+// wrong day's log.
+const z = (n) => String(n).padStart(2, '0');
+const now = new Date();
+const today = `${now.getFullYear()}-${z(now.getMonth() + 1)}-${z(now.getDate())}`;
 const file = path.join(dir, `${today}.md`);
 
 try {

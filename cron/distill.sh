@@ -28,8 +28,8 @@ python3 "$HOME/.claude/cron/jsonl-to-transcript.py" || true
 # Measure them for real. Non-fatal, reporting only — never edits a memory file.
 "$HOME/.claude/cron/check-caps.sh" || true
 
-# Opcional: so existe em instalacoes que usam o plugin do Codex. Detecta
-# que um `claude plugin update` levou embora o patch de limite do stop-gate.
+# Optional: only exists in installs using the Codex plugin. Detects that a
+# `claude plugin update` swept away the stop-gate limit patch.
 [ -x "$HOME/.claude/cron/check-codex-gate.sh" ] && \
   "$HOME/.claude/cron/check-codex-gate.sh" || true
 
@@ -68,7 +68,7 @@ ts() { date -Iseconds; }
     # Append-only extract is low-risk → cheap tier (backend mapping lives in llm-run).
     "$LLM_RUN" cheap "$prompt"; rc=$?
     if [ "$rc" = 3 ]; then
-      echo "  ABORTANDO: cota/limite de gasto estourado — pulando os projetos restantes."
+      echo "  ABORTING: quota/spend limit exhausted — skipping the remaining projects."
       break
     fi
     [ "$rc" = 0 ] || echo "  distill failed for $ctx"
