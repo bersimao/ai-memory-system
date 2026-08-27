@@ -131,8 +131,22 @@ audit_and_veto() {
 
   shopt -s nullglob
   for ctx in "$PROJECTS_ROOT"/*/context; do
-    [ -d "$ctx/memory" ] || continue
-    if [ -z "$(find "$ctx/memory" -maxdepth 1 -name '*.md' -mtime -7 -print -quit)" ]; then
+    # A pré-condição é o ARQUIVO que o curate cura, não o diretório de daily
+    # logs. Guardar por `-d memory/` excluía incondicionalmente todo store com
+    # MEMORY.md e sem memory/ — 6 deles em [[2026-08-26]] — e nenhum jamais
+    # passaria pela porta de atividade. Era o mesmo buraco da CLARK, um nível
+    # acima e pior: lá o store ficava inalcançável ao estourar o cap; aqui ele
+    # já nascia fora.
+    [ -f "$ctx/MEMORY.md" ] || continue
+    # Duas portas, não uma. A de atividade sozinha deixa um buraco permanente:
+    # um store que estoura o cap e DEPOIS fica quieto nunca mais é registrado,
+    # então nunca é quebrado em topics/ — e paga o custo de startup para sempre.
+    # O check-caps.sh enxerga esses arquivos (não tem gate) e avisa que "curate
+    # alone will not fix this"; era literalmente verdade. Estar acima do cap é
+    # condição suficiente por si só. (CLARK/addon-controle-qualidade, 2516 chars
+    # com daily log parado em 23/07, foi o caso que revelou isso — [[2026-08-26]].)
+    if [ -z "$(find "$ctx/memory" -maxdepth 1 -name '*.md' -mtime -7 -print -quit 2>/dev/null)" ] \
+       && [ "$(chars "$ctx/MEMORY.md")" -le 2500 ]; then
       continue
     fi
     register "$ctx/MEMORY.md" 2500 "$(basename "$(dirname "$ctx")")"

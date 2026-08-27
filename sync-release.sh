@@ -27,6 +27,7 @@ MANIFEST=(
   hooks/memory-inject.test.js
   cron/curate.sh
   cron/curate-audit.test.sh
+  cron/curate-gate.test.sh
   cron/split-memory.py
   cron/split-memory.test.py
   cron/distill.sh
