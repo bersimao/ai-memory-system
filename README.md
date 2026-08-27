@@ -1,3 +1,16 @@
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="ai-memory-system — persistent, cross-project memory for coding agents" width="100%">
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/works%20with-Claude%20Code-d97757.svg" alt="Works with Claude Code">
+  <img src="https://img.shields.io/badge/shared%20with-Codex-10a37f.svg" alt="Shared with Codex">
+  <img src="https://img.shields.io/badge/storage-markdown%20only-8b5cf6.svg" alt="Storage: markdown only">
+  <img src="https://img.shields.io/badge/self--checks-8%20suites-22c55e.svg" alt="Self-checks: 8 test suites">
+  <img src="https://img.shields.io/badge/runs%20on-bash%20·%20node%20·%20python3-64748b.svg" alt="Runs on bash, node, python3">
+</p>
+
 # ai-memory-system
 
 Persistent, cross-project memory for [Claude Code](https://claude.com/claude-code),

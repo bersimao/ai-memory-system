@@ -44,7 +44,8 @@ MANIFEST=(
 )
 
 # Repo-native files (they do not come from ~/.claude) the guard also scans.
-EXTRA_SCAN=(docs/memory-instructions.md docs/codex-support.md skills/memory-write/SKILL.md)
+EXTRA_SCAN=(docs/memory-instructions.md docs/codex-support.md
+            skills/memory-write/SKILL.md docs/assets/banner.svg)
 
 mode="${1:---check}"
 rc=0
