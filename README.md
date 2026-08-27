@@ -86,7 +86,7 @@ any of the code. If you can copy a line and press Enter, you can install this.
 
 ### Step 1 — Download it
 
-Paste this and press Enter:
+Paste this in a terminal, in any directory:
 
 ```bash
 git clone https://github.com/bersimao/ai-memory-system
