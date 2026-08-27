@@ -199,12 +199,27 @@ fi
 say
 CRON_MARK="# memory-system"
 cron_rc=0
+# Warn whenever registered jobs sit on a dead daemon — not only on a fresh
+# registration. WSL and minimal containers often have crontab but no cron.
+warn_if_no_daemon() {
+  if ! pgrep -x cron >/dev/null 2>&1 && ! pgrep -x crond >/dev/null 2>&1; then
+    say "  NOTE: no cron daemon is running — the jobs are registered but will"
+    say "  NOT fire. On WSL: sudo service cron start, and enable systemd (or"
+    say "  start it per boot) so they actually run."
+  fi
+}
 if ! command -v crontab >/dev/null 2>&1; then
   say "crontab not found — schedule these two yourself (cron, anacron, or a systemd timer):"
   say "  daily:  $DEST/cron/distill.sh    (transcripts -> daily logs -> memory, plus the tripwires)"
   say "  weekly: $DEST/cron/curate.sh     (tightens the memory files, with the veto)"
-elif crontab -l 2>/dev/null | grep -qF "$CRON_MARK"; then
+# Check each job, not just the marker: with a marker-only test, a crontab
+# holding one of the two jobs read as "already registered" and the other job
+# was silently never added — maintenance half-alive, reported as complete.
+elif cur="$(crontab -l 2>/dev/null || true)" \
+     && grep -qF "$CRON_MARK:distill" <<<"$cur" \
+     && grep -qF "$CRON_MARK:curate" <<<"$cur"; then
   say "cron jobs already registered (see: crontab -l | grep memory-system)"
+  warn_if_no_daemon
 else
   say "Scheduled maintenance (runs the claude CLI headless — this spends YOUR Claude usage):"
   say "  daily  12:15       $DEST/cron/distill.sh"
@@ -224,19 +239,25 @@ else
     case "$answer" in
       [yY]*)
         # Read first, then write: `crontab -l | ... | crontab -` reads and
-        # replaces the same store in one pipeline, which is a race.
+        # replaces the same store in one pipeline, which is a race. Add only
+        # the entries that are missing, so a partial registration is completed
+        # rather than duplicated.
         cur="$(crontab -l 2>/dev/null || true)"
         { [ -n "$cur" ] && printf '%s\n' "$cur"
-          echo "15 12 * * * $DEST/cron/distill.sh $CRON_MARK:distill"
-          echo "45 12 * * 1 $DEST/cron/curate.sh $CRON_MARK:curate"
+          grep -qF "$CRON_MARK:distill" <<<"$cur" \
+            || echo "15 12 * * * $DEST/cron/distill.sh $CRON_MARK:distill"
+          grep -qF "$CRON_MARK:curate" <<<"$cur" \
+            || echo "45 12 * * 1 $DEST/cron/curate.sh $CRON_MARK:curate"
         } | crontab - && say "  registered (edit times with crontab -e; remove with: crontab -l | grep -v memory-system | crontab -)" \
           || { say "  crontab registration FAILED"; cron_rc=1; }
-        # WSL and minimal containers often have cron installed but not running.
-        # A registered entry on a dead daemon is the silent failure again.
-        if ! pgrep -x cron >/dev/null 2>&1 && ! pgrep -x crond >/dev/null 2>&1; then
-          say "  NOTE: no cron daemon is running. On WSL: sudo service cron start,"
-          say "  and enable systemd (or start it per boot) so the jobs actually fire."
+        # Verify the end state, not the exit code: both jobs must actually be
+        # in the crontab now, or the install is incomplete and must say so.
+        after="$(crontab -l 2>/dev/null || true)"
+        if ! grep -qF "$CRON_MARK:distill" <<<"$after" || ! grep -qF "$CRON_MARK:curate" <<<"$after"; then
+          say "  cron entries missing after registration — schedule by hand (see README)"
+          cron_rc=1
         fi
+        warn_if_no_daemon
         ;;
       *)
         say "  skipped. Without a schedule the daily distill and weekly curation"

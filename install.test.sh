@@ -175,4 +175,17 @@ else
   bad "cron registration clobbered the user's crontab"
 fi
 
+# 16 — REGRESSION: a PARTIAL registration (one of the two jobs) must be
+# completed, not read as "already registered" — that left maintenance
+# half-alive while the installer reported success.
+printf '15 12 * * * x/distill.sh # memory-system:distill\n' > "$CT"
+runsut env CLAUDE_HOME="$h/.claude" "$SUT" --yes --cron >/dev/null 2>&1 </dev/null
+d=$(grep -c 'memory-system:distill' "$CT" 2>/dev/null || echo 0)
+c=$(grep -c 'memory-system:curate' "$CT" 2>/dev/null || echo 0)
+if [ "$d" = 1 ] && [ "$c" = 1 ]; then
+  ok "partial crontab is completed without duplicating"
+else
+  bad "partial registration mishandled (distill=$d curate=$c)"
+fi
+
 [ $fails -eq 0 ] && { echo PASS; exit 0; } || { echo "FAIL ($fails)"; exit 1; }
