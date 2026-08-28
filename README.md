@@ -175,11 +175,21 @@ with any text editor.
 | `installation INCOMPLETE` | Something above it failed. The message says which. Nothing is half-applied. |
 | Claude doesn't seem to remember anything | The instructions step was skipped. Re-run `./install.sh --yes`. |
 | Transcripts exist but daily logs / memory never update | The schedule step was skipped, or no cron daemon is running. Re-run `./install.sh --cron`; on WSL also `sudo service cron start`. |
+| Claude flags "possible renamed project" | Your new project's store is still empty, and it found another store with content that has either a similar name or the same parent folder — it might be the old memory of a moved/renamed project, or just an unrelated neighbor that happens to live nearby. It always asks before pinning; say no if it's a different project. It only checks while the new store is empty — once a session finishes there, the check quiets itself for good, so a missed warning needs the manual fix below. |
 
 To undo everything: delete `~/.claude/hooks/`, `~/.claude/cron/`, remove the
 block marked `memory-system:instructions` in `~/.claude/CLAUDE.md`, and drop
 the cron entries with `crontab -l | grep -v memory-system | crontab -`. Your
 memory files in `~/.claude/projects/` stay, and are just text.
+
+If a project folder moved somewhere the automatic check missed — a different
+parent directory with a dissimilar name, or the check already quieted itself
+before you noticed the warning — point the new folder at the old memory by
+hand:
+
+```bash
+node ~/.claude/hooks/project-store.js --pin <old-project-dir> --for <new-project-dir>
+```
 
 ---
 
