@@ -22,6 +22,7 @@ MANIFEST=(
   hooks/transcript-capture.js
   hooks/capture-maintenance.js
   hooks/daily-log-nudge.js
+  hooks/daily-log-nudge.test.js
   hooks/project-store.js
   hooks/project-store.test.js
   hooks/memory-inject.test.js
