@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# grep a skill's knowledge/reference file; on a miss, fall back to semantic
+# search (mem/memsearch) scoped to that same skill — before mem, never after,
+# so the common case (grep hits) pays zero extra latency.
+#
+# Why this exists: grep is exact-string, so "stock transfer" vs "transferência
+# de estoque" is a false negative, not a real miss. `mem search` closes that
+# gap (measured 2026-08-28: 8/9 real cross-references found by semantic search
+# alone), but it's slow (~3-5s, embeddings model load) and not everyone who
+# uses these skills has it installed — this is shipped in a team-shared skills
+# repo (ia-skills), and `mem` is a personal ai-memory-system install, so most
+# teammates simply won't have it. Checking for it first is a filesystem stat,
+# not a subprocess spawn, so a machine without it pays nothing extra.
+#
+# Usage: skill-grep <file> <term>
+#   Same shape as the `grep -in "<term>" <file>` calls already documented in
+#   db/di/addon SKILL.md — this replaces that one command, not a new workflow.
+#
+# Exit codes (distinct on purpose — a fallback hit is a weaker signal than a
+# grep hit, and the caller should treat it that way):
+#   0  grep hit
+#   10 grep missed, mem found something in this skill
+#   1  grep missed, mem not installed (no fallback attempted)
+#   2  grep missed, mem installed but found nothing relevant in this skill
+set -uo pipefail
+
+usage() { echo "usage: skill-grep <file> <term>" >&2; exit 64; }
+[ $# -eq 2 ] || usage
+file=$1
+term=$2
+[ -f "$file" ] || { echo "skill-grep: no such file: $file" >&2; exit 64; }
+
+if grep -in -- "$term" "$file"; then
+  exit 0
+fi
+
+# Overridable for tests; real use always wants the installed one.
+mem=${SKILL_GREP_MEM:-"$HOME/.claude/scripts/mem"}
+if [ ! -x "$mem" ]; then
+  echo "skill-grep: no grep hit; mem not installed, skipping semantic fallback (see ai-memory-system to add it)"
+  exit 1
+fi
+
+# knowledge/<f>.md or references/<f>.md -> the skill root two levels up.
+# Filtering fallback results to this directory keeps a miss in `db` from
+# surfacing an unrelated hit from `di` or `addon` — the fallback still only
+# answers for the skill you asked, it just stops being exact-string-only.
+skill_root=$(cd "$(dirname "$(dirname "$file")")" && pwd)
+
+# `mem` deliberately has no JSON output (see ai-memory-system/docs/retrieval-
+# interface.md: it never forwards raw flags to the backend) — it prints
+# "N. [score] hash  source" then an indented content-preview line per hit, or
+# "(no results)". Parse that plain-text contract, not a machine format that
+# doesn't exist.
+text=$("$mem" search "$term" -k 10 -c curated 2>/dev/null)
+if [ -z "$text" ]; then
+  echo "skill-grep: no grep hit; mem search returned nothing (backend missing or query failed)"
+  exit 2
+fi
+
+hits=$(printf '%s\n' "$text" | python3 -c "
+import re, sys
+skill_root = sys.argv[1]
+lines = sys.stdin.read().splitlines()
+header = re.compile(r'^\d+\. \[([\d.]+)\] (\S+)  (.+)\$')
+found = False
+i = 0
+while i < len(lines):
+    m = header.match(lines[i])
+    if m:
+        score, chunk_hash, src = m.groups()
+        preview = lines[i + 1].strip() if i + 1 < len(lines) else ''
+        if src == skill_root or src.startswith(skill_root + '/'):
+            found = True
+            print(f'{float(score):.2f}  {src}')
+            print(f'  {preview}')
+            print(f'  (mem expand {chunk_hash})')
+        i += 2
+    else:
+        i += 1
+sys.exit(0 if found else 1)
+" "$skill_root")
+status=$?
+
+if [ $status -eq 0 ] && [ -n "$hits" ]; then
+  echo "skill-grep: no grep hit; semantic match in this skill (verify before relying on it):"
+  printf '%s\n' "$hits"
+  exit 10
+fi
+
+echo "skill-grep: no grep hit; nothing relevant in this skill via semantic search either"
+exit 2

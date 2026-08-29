@@ -42,6 +42,8 @@ MANIFEST=(
   cron/backup-push.sh
   scripts/mem
   scripts/llm-run
+  scripts/skill-grep
+  scripts/skill-grep.test.sh
 )
 
 # Repo-native files (they do not come from ~/.claude) the guard also scans.
