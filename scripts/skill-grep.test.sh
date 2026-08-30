@@ -147,8 +147,10 @@ check $? 1 "grep miss on sectioned file -> exit 1 (unchanged)"
 for want in "Bin Allocations for Stock Transfer" "Invalid Email Contacts" "Sales Order Batch Numbers"; do
   echo "$out" | grep -qF "$want" || { echo "FAIL structural fallback omitted a section: $want"; fail=1; }
 done
-echo "$out" | grep -qi "language" || { echo "FAIL structural fallback -> no language hint"; fail=1; }
+echo "$out" | grep -qi "OTHER language" || { echo "FAIL sectioned file -> no other-language directive"; fail=1; }
 echo "$out" | grep -qF "select 1;" && { echo "FAIL structural fallback dumped body lines, not just titles"; fail=1; }
+# The directive must quote the term the caller actually searched for.
+echo "$out" | grep -qF 'transferência de estoque' || { echo "FAIL directive did not echo the searched term"; fail=1; }
 
 # --- structural fallback: truncation is announced, never silent -------------
 out=$(SKILL_GREP_TOC_MAX=2 SKILL_GREP_MEM=/does/not/exist "$SG" "$tmp/db/knowledge/sectioned.md" "nada")
@@ -156,18 +158,21 @@ echo "$out" | grep -qF "Bin Allocations for Stock Transfer" || { echo "FAIL trun
 echo "$out" | grep -qF "Sales Order Batch Numbers" && { echo "FAIL SKILL_GREP_TOC_MAX did not truncate"; fail=1; }
 echo "$out" | grep -qE "more" || { echo "FAIL truncation was silent (no '… and N more')"; fail=1; }
 
-# --- structural fallback: flat file samples rows, skipping noise ------------
+# --- flat file: NO excerpt, just the other-language directive ---------------
+# These files are mixed-language (menu-ids-reference.md is English prose over
+# pt-BR rows), so any excerpt reports the language of the excerpt, not of the
+# part being searched. The retry keys off the QUERY's language instead.
 out=$(SKILL_GREP_MEM=/does/not/exist "$SG" "$tmp/di/knowledge/flat.md" "pedido de venda")
-echo "$out" | grep -qE "o(Invoices|CreditNotes|PurchaseOrders|IncomingPayments) = " || { echo "FAIL flat-file fallback showed no sample data rows"; fail=1; }
-echo "$out" | grep -qF "a quoted note" && { echo "FAIL flat-file sample included a blockquote"; fail=1; }
-echo "$out" | grep -qF "english intro paragraph" && { echo "FAIL flat-file sample took the intro prose instead of the data"; fail=1; }
-echo "$out" | grep -qi "flat file" || { echo "FAIL flat-file fallback did not say it is flat"; fail=1; }
+echo "$out" | grep -qi "OTHER language" || { echo "FAIL flat file -> no other-language directive"; fail=1; }
+echo "$out" | grep -qE "o(Invoices|CreditNotes|PurchaseOrders) = " && { echo "FAIL flat file leaked a content excerpt (language sniffing is gone)"; fail=1; }
+echo "$out" | grep -qF "english intro paragraph" && { echo "FAIL flat file leaked intro prose"; fail=1; }
 
 # --- a big flat file with a few headings is FLAT, not sectioned -------------
 # Listing 3 titles for ~900 rows is not an index; the caller needs to see rows.
 out=$(SKILL_GREP_MEM=/does/not/exist "$SG" "$tmp/di/knowledge/big-flat-with-headings.md" "sales order")
-echo "$out" | grep -qi "flat file" || { echo "FAIL big flat file with 3 headings was treated as sectioned"; fail=1; }
-echo "$out" | grep -qE "(Pedido de venda|Configurações gerais) [0-9]+ —" || { echo "FAIL big flat file showed no sample data rows"; fail=1; }
+echo "$out" | grep -qF "## Módulos" && { echo "FAIL big flat file with 3 headings was listed as an index"; fail=1; }
+echo "$out" | grep -qi "OTHER language" || { echo "FAIL big flat file -> no other-language directive"; fail=1; }
+echo "$out" | grep -qE "(Pedido de venda|Configurações gerais) [0-9]+ —" && { echo "FAIL big flat file leaked a content excerpt"; fail=1; }
 
 # --- the fallback must NOT fire when grep hit (it would be pure noise) ------
 out=$(SKILL_GREP_MEM=/does/not/exist "$SG" "$tmp/db/knowledge/sectioned.md" "Invalid Email")

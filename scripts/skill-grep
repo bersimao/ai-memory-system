@@ -59,11 +59,18 @@ toc_max=${SKILL_GREP_TOC_MAX:-60}
 # B1 jargon flatly wrong: "pedido de venda" -> "Request for sale" (it is Sales
 # Order), "filiais" -> "subsidiaries" (Branches).
 #
-# The listing also REVEALS the file's language, which is the real fix for every
-# cross-language miss documented so far (2026-08-09, 2026-08-26): read the titles,
-# see they are English, re-grep in English. That retry was always the fix — it
-# just lived only in SKILL.md prose, where it gets skipped. Here it arrives at the
-# moment of failure, with the evidence attached.
+# It does NOT try to tell you the file's language, and neither should anything
+# else here. These files are MIXED: menu-ids-reference.md is English prose at
+# lines 3-29 and pt-BR menu rows from line 32 on. Any excerpt therefore reports
+# the language of the excerpt, not of the part you were looking for — a sample
+# that lands in the intro says "English" about a file whose rows are pt-BR. The
+# earlier version of this script sampled rows for exactly that purpose and was
+# only ever right by luck of the layout.
+#
+# The retry is driven by YOUR QUERY's language instead, which is known for
+# certain because you wrote it: this corpus is pt-BR or en-US, so if the term
+# missed, the other language is the one thing left to try. That is unconditional
+# and needs no detection.
 # A listing only helps if picking a title actually NARROWS the file. "Has
 # headings" is the wrong test: menu-ids-reference.md has 3 of them for 923 lines,
 # so listing them leaves the caller ~770 lines to search and tells them nothing.
@@ -78,26 +85,16 @@ show_structure() {
   n=$(grep -cE '^#{2,4} ' "$file")
   lines=$(wc -l < "$file")
   per=$(( n > 0 ? lines / n : lines ))
+  # A complete list of titles is safe to print — it is exhaustive, not a sample,
+  # so it cannot misrepresent the file the way an excerpt can. Skipped entirely
+  # when it would not be an index (see max_lines_per_section).
   if [ "$n" -ge 3 ] && [ "$per" -le "$max_lines_per_section" ]; then
-    echo "skill-grep: sections in this file — grep a term you can actually see here, and MIND THE LANGUAGE:"
+    echo "skill-grep: every section in this file (complete list — grep a title you see here):"
     grep -nE '^#{2,4} ' "$file" | head -"$toc_max"
     [ "$n" -gt "$toc_max" ] && echo "  … and $((n - toc_max)) more (raise SKILL_GREP_TOC_MAX, currently $toc_max)"
-  else
-    # Flat list (enum dumps, menu tables): no titles to print, so print real rows.
-    # Fewer rows than a TOC on purpose — these are a language sample, not an index.
-    #
-    # Sample from the MIDDLE, not the top: the top of these files is prose intro
-    # and a code snippet (menu-ids-reference.md opens with an English paragraph
-    # and a C# example), so a head-5 sample shows none of the pt-BR rows it exists
-    # to reveal. The middle of a flat dump is, by definition, the dump.
-    echo "skill-grep: flat file, no sections to list. Sample rows from the middle, so you can see its language:"
-    awk -v m="$(( lines / 2 ))" '
-      NR >= m && NF && !/^[[:space:]]*#/ && !/^[[:space:]]*>/ && !/^[[:space:]]*```/ {
-        print NR ": " $0; c++
-      }
-      c >= 5 { exit }' "$file"
   fi
-  echo "skill-grep: if that is not the language you searched in, re-run with the term in THAT language."
+  echo "skill-grep: no hit for \"$term\". This corpus is pt-BR or en-US only — re-run with the"
+  echo "            SAME term in the OTHER language before concluding it does not exist."
 }
 
 if grep -in -- "$term" "$file"; then
