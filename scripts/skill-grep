@@ -85,24 +85,36 @@ max_lines_per_section=40
 
 show_structure() {
   local n lines per
-  n=$(grep -cE '^#{2,4} ' "$file")
+  # Levels 2-6, not 2-4: a level-5 heading would otherwise be silently dropped
+  # from a list that calls itself complete. Level 1 stays out on purpose — in
+  # this corpus it is the document title, not a section (verified: no
+  # knowledge/ file has a `# ` heading after its first line).
+  n=$(grep -cE '^#{2,6} ' "$file")
   lines=$(wc -l < "$file")
   per=$(( n > 0 ? lines / n : lines ))
   [ "$n" -ge 3 ] && [ "$per" -le "$max_lines_per_section" ] || return 0
 
-  # A COMPLETE list of titles is safe to print: absence from it really does mean
-  # absence from the file, so it cannot mislead the way an excerpt can. A
-  # TRUNCATED list carries no such guarantee — it is a prefix sample, and calling
-  # it "the sections of this file" would repeat, in this branch, exactly the
-  # part-implies-whole mistake the flat-file excerpt was deleted for. So the two
-  # cases are labelled differently, and the truncated one says outright that
-  # absence from it proves nothing.
+  # Two independent limits, and the label must not overstate either.
+  #
+  # 1. Complete over TITLES is not complete over the FILE. A term can sit in a
+  #    section's body and in no title at all — "WhsCode" is on 10 lines of
+  #    useful-queries.md and in none of its 36 titles — so "missing from this
+  #    list" never means "missing from the file". (What DOES prove the literal
+  #    term is absent is the grep above, which already read every line.) The
+  #    listing is for navigating to the right section, nothing more.
+  # 2. A truncated listing is a prefix sample, so it is not even complete over
+  #    titles, and says so.
+  #
+  # Both are the same failure the flat-file excerpt was deleted for: a part
+  # presented as the whole. Stating the scope is what keeps it honest.
   if [ "$n" -le "$toc_max" ]; then
-    echo "skill-grep: all $n sections of this file — a complete list, so a title missing here is genuinely not in the file:"
-    grep -nE '^#{2,4} ' "$file"
+    echo "skill-grep: all $n section titles in this file — complete list of TITLES only; a term can"
+    echo "            live in a section's body without appearing in any title, so use these to pick"
+    echo "            where to look, not to conclude the file lacks the subject:"
+    grep -nE '^#{2,6} ' "$file"
   else
-    echo "skill-grep: the FIRST $toc_max of $n sections — an incomplete list, do NOT read absence into it:"
-    grep -nE '^#{2,4} ' "$file" | head -"$toc_max"
+    echo "skill-grep: the FIRST $toc_max of $n section titles — an incomplete list, do NOT read absence into it:"
+    grep -nE '^#{2,6} ' "$file" | head -"$toc_max"
     echo "            $((n - toc_max)) more not shown (raise SKILL_GREP_TOC_MAX to see them all)."
   fi
 }

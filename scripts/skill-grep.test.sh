@@ -156,10 +156,24 @@ echo "$out" | grep -qF "select 1;" && { echo "FAIL structural fallback dumped bo
 # The directive must quote the term the caller actually searched for.
 echo "$out" | grep -qF 'transferência de estoque' || { echo "FAIL directive did not echo the searched term"; fail=1; }
 
-# --- a COMPLETE listing may claim completeness ------------------------------
-# That claim is the whole value of the listing: absence from a complete list is
-# real evidence of absence, so the label must be earned.
+# --- a COMPLETE listing claims completeness over TITLES, not over the file ---
+# "WhsCode" is on 10 lines of the real useful-queries.md and in none of its 36
+# titles, so a complete title list still proves nothing about the file's content.
+# The label has to scope itself or it repeats the part-implies-whole error.
 echo "$out" | grep -qiE "\bcomplete list" || { echo "FAIL untruncated listing did not state it is complete"; fail=1; }
+echo "$out" | grep -qi "TITLES only" || { echo "FAIL completeness claim was not scoped to titles"; fail=1; }
+echo "$out" | grep -qiE "genuinely not in the file|not in the file:" && { echo "FAIL listing claimed absence from the FILE, not just from the titles"; fail=1; }
+
+# A level-5 heading must not be silently dropped from a list calling itself complete.
+cat > "$tmp/db/knowledge/deep.md" <<'DEEP'
+# Doc
+## Alpha
+### Beta
+##### Epsilon buried deep
+#### Delta
+DEEP
+outd=$(SKILL_GREP_MEM=/does/not/exist "$SG" "$tmp/db/knowledge/deep.md" "nada")
+echo "$outd" | grep -qF "Epsilon buried deep" || { echo "FAIL complete listing dropped a level-5 heading"; fail=1; }
 
 # --- a TRUNCATED listing must NOT claim completeness -------------------------
 # A prefix of the titles is a sample. Labelling it "the sections of this file"
