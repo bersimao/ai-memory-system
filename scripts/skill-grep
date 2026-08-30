@@ -33,6 +33,8 @@
 #   10 grep missed, mem found something in this skill
 #   1  grep missed, mem not installed (no fallback attempted)
 #   2  grep missed, mem installed but found nothing relevant in this skill
+#
+# On 1 and 2 the file's own structure is printed too — see show_structure().
 set -uo pipefail
 
 usage() { echo "usage: skill-grep <file> <term>" >&2; exit 64; }
@@ -40,6 +42,63 @@ usage() { echo "usage: skill-grep <file> <term>" >&2; exit 64; }
 file=$1
 term=$2
 [ -f "$file" ] || { echo "skill-grep: no such file: $file" >&2; exit 64; }
+
+# How many section titles to print before truncating — a listing is only cheap
+# while it stays short (the measured db query library has 26).
+toc_max=${SKILL_GREP_TOC_MAX:-60}
+
+# Last resort on a total miss: stop guessing at synonyms and show the file's own
+# structure, so the caller can pick a term that is provably IN the file.
+#
+# Why this beats translating the query (measured 2026-08-30; full numbers in the
+# ai-memory-system topic `argos-translate-benchmark`): for a knowledge file whose
+# entries are named sections, printing every title is 100% recall BY CONSTRUCTION
+# — if the section exists, its title is in that list — at ~354 tokens for the
+# 26-title db query library, ~5ms, and zero dependencies. Machine translation
+# reached 27/30 only through a noisy any-token grep (median 13 junk lines) and got
+# B1 jargon flatly wrong: "pedido de venda" -> "Request for sale" (it is Sales
+# Order), "filiais" -> "subsidiaries" (Branches).
+#
+# The listing also REVEALS the file's language, which is the real fix for every
+# cross-language miss documented so far (2026-08-09, 2026-08-26): read the titles,
+# see they are English, re-grep in English. That retry was always the fix — it
+# just lived only in SKILL.md prose, where it gets skipped. Here it arrives at the
+# moment of failure, with the evidence attached.
+# A listing only helps if picking a title actually NARROWS the file. "Has
+# headings" is the wrong test: menu-ids-reference.md has 3 of them for 923 lines,
+# so listing them leaves the caller ~770 lines to search and tells them nothing.
+# Measured across the real knowledge/ corpus (2026-08-30) the split is stark —
+# sectioned files run 6-23 lines per section (tables-reference 6, useful-queries
+# 23), flat dumps run 180-307 (objtype-servicetype-enums 180, menu-ids 307).
+# 40 sits in that gap and is roughly "a section you would actually read".
+max_lines_per_section=40
+
+show_structure() {
+  local n lines per
+  n=$(grep -cE '^#{2,4} ' "$file")
+  lines=$(wc -l < "$file")
+  per=$(( n > 0 ? lines / n : lines ))
+  if [ "$n" -ge 3 ] && [ "$per" -le "$max_lines_per_section" ]; then
+    echo "skill-grep: sections in this file — grep a term you can actually see here, and MIND THE LANGUAGE:"
+    grep -nE '^#{2,4} ' "$file" | head -"$toc_max"
+    [ "$n" -gt "$toc_max" ] && echo "  … and $((n - toc_max)) more (raise SKILL_GREP_TOC_MAX, currently $toc_max)"
+  else
+    # Flat list (enum dumps, menu tables): no titles to print, so print real rows.
+    # Fewer rows than a TOC on purpose — these are a language sample, not an index.
+    #
+    # Sample from the MIDDLE, not the top: the top of these files is prose intro
+    # and a code snippet (menu-ids-reference.md opens with an English paragraph
+    # and a C# example), so a head-5 sample shows none of the pt-BR rows it exists
+    # to reveal. The middle of a flat dump is, by definition, the dump.
+    echo "skill-grep: flat file, no sections to list. Sample rows from the middle, so you can see its language:"
+    awk -v m="$(( lines / 2 ))" '
+      NR >= m && NF && !/^[[:space:]]*#/ && !/^[[:space:]]*>/ && !/^[[:space:]]*```/ {
+        print NR ": " $0; c++
+      }
+      c >= 5 { exit }' "$file"
+  fi
+  echo "skill-grep: if that is not the language you searched in, re-run with the term in THAT language."
+}
 
 if grep -in -- "$term" "$file"; then
   exit 0
@@ -49,6 +108,7 @@ fi
 mem=${SKILL_GREP_MEM:-"$HOME/.claude/scripts/mem"}
 if [ ! -x "$mem" ]; then
   echo "skill-grep: no grep hit; mem not installed, skipping semantic fallback (see ai-memory-system to add it)"
+  show_structure
   exit 1
 fi
 
@@ -66,6 +126,7 @@ skill_root=$(cd "$(dirname "$(dirname "$file")")" && pwd)
 text=$("$mem" search "$term" -k 10 -c curated 2>/dev/null)
 if [ -z "$text" ]; then
   echo "skill-grep: no grep hit; mem search returned nothing (backend missing or query failed)"
+  show_structure
   exit 2
 fi
 
@@ -100,4 +161,5 @@ if [ $status -eq 0 ] && [ -n "$hits" ]; then
 fi
 
 echo "skill-grep: no grep hit; nothing relevant in this skill via semantic search either"
+show_structure
 exit 2

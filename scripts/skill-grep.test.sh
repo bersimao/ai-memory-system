@@ -13,6 +13,58 @@ mkdir -p "$tmp/db/knowledge" "$tmp/di/knowledge"
 echo "### OCRD — Business Partners" > "$tmp/db/knowledge/tables-reference.md"
 echo "no relevant heading here" > "$tmp/db/knowledge/other.md"
 
+# Sectioned file (>=3 headings) -> the structural fallback lists its titles.
+cat > "$tmp/db/knowledge/sectioned.md" <<'SEC'
+# Useful Queries
+
+### Bin Allocations for Stock Transfer
+select 1;
+
+### Invalid Email Contacts
+select 2;
+
+### Sales Order Batch Numbers
+select 3;
+SEC
+
+# Regression (caught 2026-08-30): a real flat list CAN carry a few headings.
+# menu-ids-reference.md has 3 of them for 923 lines; classifying it as
+# "sectioned" printed 3 useless titles and left ~770 lines to search. The test is
+# lines-per-section, not heading count, so this must come out FLAT.
+# Shape mirrors the real file: exactly 3 headings that `^#{2,4} ` matches, ~900
+# rows. If the fixture had fewer than 3 it would take the flat branch for the
+# WRONG reason and the test could never fail — verified by mutation.
+{
+  echo "# Menu IDs"
+  echo
+  echo "## How to use (UI API)"
+  echo "some english intro prose that must not be the sample"
+  echo "## Módulos"
+  for i in $(seq 1 450); do echo "- Pedido de venda $i — \`$((3000 + i))\`"; done
+  echo "## Ferramentas"
+  for i in $(seq 1 450); do echo "- Configurações gerais $i — \`$((8000 + i))\`"; done
+} > "$tmp/di/knowledge/big-flat-with-headings.md"
+
+# Flat file (enum dump) -> no titles, so the fallback samples rows instead.
+# The prose/quote at the top must NOT be what gets sampled: these files open with
+# an intro, and sampling it would hide the very rows the caller needs to see.
+cat > "$tmp/di/knowledge/flat.md" <<'FLAT'
+# Enums
+
+> a quoted note that must not be sampled
+
+an english intro paragraph that must not be the sample either
+
+oOrders = 17
+oInvoices = 13
+oCreditNotes = 14
+oPurchaseOrders = 22
+oIncomingPayments = 24
+oPriceLists = 6
+oDeliveryNotes = 15
+oQuotations = 23
+FLAT
+
 # Fake `mem` that validates its args the same way the real one does (search,
 # -k N, -c curated|transcripts, nothing else) — a regression that sends the
 # real mem an unrecognised flag (it happened once: -j, which mem rejects with
@@ -86,6 +138,41 @@ printf '#!/usr/bin/env bash\n' > "$fake_mem_empty"
 chmod +x "$fake_mem_empty"
 out=$(SKILL_GREP_MEM="$fake_mem_empty" "$SG" "$tmp/db/knowledge/other.md" "stock transfer")
 check $? 2 "grep miss + mem returns nothing -> exit 2"
+
+# --- structural fallback: sectioned file lists its titles -------------------
+# The point of the fallback is recall by construction: on a miss the caller must
+# be shown terms that are provably in the file, in the file's own language.
+out=$(SKILL_GREP_MEM=/does/not/exist "$SG" "$tmp/db/knowledge/sectioned.md" "transferência de estoque")
+check $? 1 "grep miss on sectioned file -> exit 1 (unchanged)"
+for want in "Bin Allocations for Stock Transfer" "Invalid Email Contacts" "Sales Order Batch Numbers"; do
+  echo "$out" | grep -qF "$want" || { echo "FAIL structural fallback omitted a section: $want"; fail=1; }
+done
+echo "$out" | grep -qi "language" || { echo "FAIL structural fallback -> no language hint"; fail=1; }
+echo "$out" | grep -qF "select 1;" && { echo "FAIL structural fallback dumped body lines, not just titles"; fail=1; }
+
+# --- structural fallback: truncation is announced, never silent -------------
+out=$(SKILL_GREP_TOC_MAX=2 SKILL_GREP_MEM=/does/not/exist "$SG" "$tmp/db/knowledge/sectioned.md" "nada")
+echo "$out" | grep -qF "Bin Allocations for Stock Transfer" || { echo "FAIL truncated listing dropped the first section"; fail=1; }
+echo "$out" | grep -qF "Sales Order Batch Numbers" && { echo "FAIL SKILL_GREP_TOC_MAX did not truncate"; fail=1; }
+echo "$out" | grep -qE "more" || { echo "FAIL truncation was silent (no '… and N more')"; fail=1; }
+
+# --- structural fallback: flat file samples rows, skipping noise ------------
+out=$(SKILL_GREP_MEM=/does/not/exist "$SG" "$tmp/di/knowledge/flat.md" "pedido de venda")
+echo "$out" | grep -qE "o(Invoices|CreditNotes|PurchaseOrders|IncomingPayments) = " || { echo "FAIL flat-file fallback showed no sample data rows"; fail=1; }
+echo "$out" | grep -qF "a quoted note" && { echo "FAIL flat-file sample included a blockquote"; fail=1; }
+echo "$out" | grep -qF "english intro paragraph" && { echo "FAIL flat-file sample took the intro prose instead of the data"; fail=1; }
+echo "$out" | grep -qi "flat file" || { echo "FAIL flat-file fallback did not say it is flat"; fail=1; }
+
+# --- a big flat file with a few headings is FLAT, not sectioned -------------
+# Listing 3 titles for ~900 rows is not an index; the caller needs to see rows.
+out=$(SKILL_GREP_MEM=/does/not/exist "$SG" "$tmp/di/knowledge/big-flat-with-headings.md" "sales order")
+echo "$out" | grep -qi "flat file" || { echo "FAIL big flat file with 3 headings was treated as sectioned"; fail=1; }
+echo "$out" | grep -qE "(Pedido de venda|Configurações gerais) [0-9]+ —" || { echo "FAIL big flat file showed no sample data rows"; fail=1; }
+
+# --- the fallback must NOT fire when grep hit (it would be pure noise) ------
+out=$(SKILL_GREP_MEM=/does/not/exist "$SG" "$tmp/db/knowledge/sectioned.md" "Invalid Email")
+check $? 0 "grep hit on sectioned file -> exit 0"
+echo "$out" | grep -qF "Sales Order Batch Numbers" && { echo "FAIL structure printed on a HIT (should be silent)"; fail=1; }
 
 # --- an actually-invalid invocation must be rejected by the fake, too -------
 # (guards the guard: if this ever prints "ok" instead of erroring, the fake
