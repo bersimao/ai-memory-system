@@ -71,6 +71,23 @@ a different project is one question away. The vector tier is optional and lives
 behind a two-line seam (`scripts/mem`); remove it and grep still answers. See
 `docs/retrieval-interface.md`.
 
+**Says so when retrieval is failing quietly.** If your notes and your domain's
+vocabulary are not in the same language, search breaks in a way that looks like
+an answer. Embeddings cluster by *language* as much as by subject — measured
+here, a same-language chunk about the **wrong** subject scored 0.71 against 0.52
+for the right one in the other language — and a word can match in the wrong
+sense entirely (in pt-BR, *depósito* is both a warehouse and a bank deposit; a
+query about warehouses returned five confident hits, all financial). Exact grep
+fails from the other side: it returns 0 for a term the file spells in the other
+language. So a weak result is not returned silently — `scripts/mem` and
+`scripts/skill-grep` both say, at the moment of failure, to retry in the other
+language, and `skill-grep` lists a file's section titles so you can pick a term
+that is provably there. Machine translation was benchmarked for this and
+rejected: it does not know your vendor's terms (it renders *pedido de venda* as
+"Request for sale" when the product calls it a **Sales Order**). The evidence,
+and how to adapt it to your languages, is in
+[`docs/cross-language-retrieval.md`](docs/cross-language-retrieval.md).
+
 ## Setup
 
 **Before you start**, you need two things:
@@ -269,7 +286,10 @@ cron/
                           if you make ~/.claude a git repo with an origin remote;
                           otherwise it logs one line and exits
 scripts/
-  mem                     the retrieval seam (search / expand / report)
+  mem                     the retrieval seam (search / expand / report);
+                          warns and orders a retry when the top score is weak
+  skill-grep              grep one knowledge file -> vector fallback -> list its
+                          sections; never lets a miss pass as proof of absence
   llm-run                 LLM invocation with quota and rate-limit handling
 ```
 
