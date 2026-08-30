@@ -34,7 +34,9 @@
 #   1  grep missed, mem not installed (no fallback attempted)
 #   2  grep missed, mem installed but found nothing relevant in this skill
 #
-# On 1 and 2 the file's own structure is printed too — see show_structure().
+# Every non-zero path also prints the other-language retry order (other_language),
+# 10 included — see the comment there. 1 and 2 additionally list the file's
+# sections when that listing would be an index (show_structure).
 set -uo pipefail
 
 usage() { echo "usage: skill-grep <file> <term>" >&2; exit 64; }
@@ -71,6 +73,7 @@ toc_max=${SKILL_GREP_TOC_MAX:-60}
 # certain because you wrote it: this corpus is pt-BR or en-US, so if the term
 # missed, the other language is the one thing left to try. That is unconditional
 # and needs no detection.
+
 # A listing only helps if picking a title actually NARROWS the file. "Has
 # headings" is the wrong test: menu-ids-reference.md has 3 of them for 923 lines,
 # so listing them leaves the caller ~770 lines to search and tells them nothing.
@@ -85,16 +88,33 @@ show_structure() {
   n=$(grep -cE '^#{2,4} ' "$file")
   lines=$(wc -l < "$file")
   per=$(( n > 0 ? lines / n : lines ))
-  # A complete list of titles is safe to print — it is exhaustive, not a sample,
-  # so it cannot misrepresent the file the way an excerpt can. Skipped entirely
-  # when it would not be an index (see max_lines_per_section).
-  if [ "$n" -ge 3 ] && [ "$per" -le "$max_lines_per_section" ]; then
-    echo "skill-grep: every section in this file (complete list — grep a title you see here):"
+  [ "$n" -ge 3 ] && [ "$per" -le "$max_lines_per_section" ] || return 0
+
+  # A COMPLETE list of titles is safe to print: absence from it really does mean
+  # absence from the file, so it cannot mislead the way an excerpt can. A
+  # TRUNCATED list carries no such guarantee — it is a prefix sample, and calling
+  # it "the sections of this file" would repeat, in this branch, exactly the
+  # part-implies-whole mistake the flat-file excerpt was deleted for. So the two
+  # cases are labelled differently, and the truncated one says outright that
+  # absence from it proves nothing.
+  if [ "$n" -le "$toc_max" ]; then
+    echo "skill-grep: all $n sections of this file — a complete list, so a title missing here is genuinely not in the file:"
+    grep -nE '^#{2,4} ' "$file"
+  else
+    echo "skill-grep: the FIRST $toc_max of $n sections — an incomplete list, do NOT read absence into it:"
     grep -nE '^#{2,4} ' "$file" | head -"$toc_max"
-    [ "$n" -gt "$toc_max" ] && echo "  … and $((n - toc_max)) more (raise SKILL_GREP_TOC_MAX, currently $toc_max)"
+    echo "            $((n - toc_max)) more not shown (raise SKILL_GREP_TOC_MAX to see them all)."
   fi
-  echo "skill-grep: no hit for \"$term\". This corpus is pt-BR or en-US only — re-run with the"
-  echo "            SAME term in the OTHER language before concluding it does not exist."
+}
+
+# Printed on EVERY path where the grep missed — including the one where `mem`
+# returned a semantic hit, because that hit is explicitly a weak signal the
+# caller is told to verify. A wrong-language grep that lands on a plausible-
+# looking semantic match is the exact case where the retry gets skipped, so
+# withholding the reminder there would withhold it when it matters most.
+other_language() {
+  echo "skill-grep: no grep hit for \"$term\". This corpus is pt-BR or en-US only — re-run with"
+  echo "            the SAME term in the OTHER language before concluding it does not exist."
 }
 
 if grep -in -- "$term" "$file"; then
@@ -106,6 +126,7 @@ mem=${SKILL_GREP_MEM:-"$HOME/.claude/scripts/mem"}
 if [ ! -x "$mem" ]; then
   echo "skill-grep: no grep hit; mem not installed, skipping semantic fallback (see ai-memory-system to add it)"
   show_structure
+  other_language
   exit 1
 fi
 
@@ -124,6 +145,7 @@ text=$("$mem" search "$term" -k 10 -c curated 2>/dev/null)
 if [ -z "$text" ]; then
   echo "skill-grep: no grep hit; mem search returned nothing (backend missing or query failed)"
   show_structure
+  other_language
   exit 2
 fi
 
@@ -154,9 +176,11 @@ status=$?
 if [ $status -eq 0 ] && [ -n "$hits" ]; then
   echo "skill-grep: no grep hit; semantic match in this skill (verify before relying on it):"
   printf '%s\n' "$hits"
+  other_language
   exit 10
 fi
 
 echo "skill-grep: no grep hit; nothing relevant in this skill via semantic search either"
 show_structure
+other_language
 exit 2

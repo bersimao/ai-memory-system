@@ -118,6 +118,10 @@ st=$?
 check $st 10 "grep miss + mem hit in-skill -> exit 10"
 echo "$out" | grep -q "tables-reference.md" || { echo "FAIL in-skill hit is printed"; fail=1; }
 echo "$out" | grep -q "objtype-enums.md" && { echo "FAIL other-skill hit leaked through the filter"; fail=1; }
+# A mem hit is a WEAK signal the caller is told to verify, so this is precisely
+# where a wrong-language grep gets abandoned on a plausible-looking match. The
+# retry order must survive here too, or it is not unconditional.
+echo "$out" | grep -qi "OTHER language" || { echo "FAIL exit 10 (mem hit) withheld the other-language directive"; fail=1; }
 
 # --- grep miss, mem present, only other-skill results -> true miss ---------
 fake_mem_nohit="$tmp/fake-mem-nohit"
@@ -152,11 +156,20 @@ echo "$out" | grep -qF "select 1;" && { echo "FAIL structural fallback dumped bo
 # The directive must quote the term the caller actually searched for.
 echo "$out" | grep -qF 'transferência de estoque' || { echo "FAIL directive did not echo the searched term"; fail=1; }
 
-# --- structural fallback: truncation is announced, never silent -------------
+# --- a COMPLETE listing may claim completeness ------------------------------
+# That claim is the whole value of the listing: absence from a complete list is
+# real evidence of absence, so the label must be earned.
+echo "$out" | grep -qiE "\bcomplete list" || { echo "FAIL untruncated listing did not state it is complete"; fail=1; }
+
+# --- a TRUNCATED listing must NOT claim completeness -------------------------
+# A prefix of the titles is a sample. Labelling it "the sections of this file"
+# would re-run the part-implies-whole error the flat-file excerpt was cut for.
 out=$(SKILL_GREP_TOC_MAX=2 SKILL_GREP_MEM=/does/not/exist "$SG" "$tmp/db/knowledge/sectioned.md" "nada")
 echo "$out" | grep -qF "Bin Allocations for Stock Transfer" || { echo "FAIL truncated listing dropped the first section"; fail=1; }
 echo "$out" | grep -qF "Sales Order Batch Numbers" && { echo "FAIL SKILL_GREP_TOC_MAX did not truncate"; fail=1; }
-echo "$out" | grep -qE "more" || { echo "FAIL truncation was silent (no '… and N more')"; fail=1; }
+echo "$out" | grep -qE "more" || { echo "FAIL truncation was silent (no 'N more not shown')"; fail=1; }
+echo "$out" | grep -qiE "\bcomplete list" && { echo "FAIL truncated listing claimed to be complete"; fail=1; }
+echo "$out" | grep -qi "incomplete\|do NOT read absence" || { echo "FAIL truncated listing did not warn against reading absence into it"; fail=1; }
 
 # --- flat file: NO excerpt, just the other-language directive ---------------
 # These files are mixed-language (menu-ids-reference.md is English prose over
