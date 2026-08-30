@@ -3,11 +3,22 @@
 # search (mem/memsearch) scoped to that same skill — before mem, never after,
 # so the common case (grep hits) pays zero extra latency.
 #
-# Why this exists: grep is exact-string, so "stock transfer" vs "transferência
-# de estoque" is a false negative, not a real miss. `mem search` closes that
-# gap (measured 2026-08-28: 8/9 real cross-references found by semantic search
-# alone), but it's slow (~3-5s, embeddings model load) and not everyone who
-# uses these skills has it installed — this is shipped in a team-shared skills
+# Why this exists: grep is exact-string, so a same-language paraphrase (e.g.
+# not knowing which section title was used for a fact you can describe) is a
+# false negative, not a real miss. `mem search` closes THAT gap (measured
+# 2026-08-28: 8/9 real cross-references found by semantic search alone, same
+# language on both sides).
+#
+# It does NOT close the cross-language gap (pt-BR query vs an EN-titled
+# knowledge file, or vice versa) — tested and falsified 2026-08-29: even
+# BGE-M3's raw dense embedding, with no BM25/hybrid involved at all, scored a
+# same-language distractor higher than the correct cross-language match
+# (0.71 vs 0.52 cosine). That's a property of the embedding model on this
+# content, not a config knob. For that case the fix is still "retry the grep
+# in the file's other documented language" — db/di SKILL.md already say so.
+#
+# It's also slow (~3-5s, embeddings model load) and not everyone who uses
+# these skills has it installed — this is shipped in a team-shared skills
 # repo (ia-skills), and `mem` is a personal ai-memory-system install, so most
 # teammates simply won't have it. Checking for it first is a filesystem stat,
 # not a subprocess spawn, so a machine without it pays nothing extra.
