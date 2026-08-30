@@ -41,6 +41,7 @@ MANIFEST=(
   cron/check-mem-review.sh
   cron/backup-push.sh
   scripts/mem
+  scripts/mem.test.sh
   scripts/llm-run
   scripts/skill-grep
   scripts/skill-grep.test.sh

@@ -117,6 +117,28 @@ for i, r in enumerate(rs, 1):
     txt = (r.get("content") or "").replace("\n", " ")[:220]
     print(f"{i}. [{r.get('score', 0):.4f}] {r.get('chunk_hash')}  {r.get('source')}")
     print(f"   {txt}")
+
+# A weak top score is where retrieval quietly fails, so the retry order goes HERE
+# rather than in CLAUDE.md: this line costs nothing until it fires, whereas a rule
+# in CLAUDE.md is ~30 tokens of every session forever AND is prose, which is the
+# thing that gets skipped (2026-08-20: asserted some wikilinks "never worked"
+# while the answer sat in another project's log).
+#
+# Why language and not just "try other words": this index clusters by LANGUAGE.
+# Measured 2026-08-29 — a same-language chunk about the WRONG subject scored 0.71
+# against 0.52 for the right cross-language one. Measured again 2026-08-30 — the
+# pt-BR query "códigos de depósito" returned five hits at ~0.50, every one of them
+# the financial sense of "depósito" (bank deposit), while the warehouse memory that
+# does exist never surfaced. Same-language + wrong-sense outranks right-answer.
+#
+# 0.50 is the threshold `mem report` already uses for "weak/no match" — same number
+# on purpose, so the report and this warning never disagree about what weak means.
+top = max((float(r.get("score", 0) or 0) for r in rs), default=0.0)
+if top <= 0.50:
+    print()
+    print(f"mem: top score {top:.2f} <= 0.50 (weak). This index clusters by LANGUAGE, and a word")
+    print( "     can match in the wrong sense. Re-run the SAME query in the OTHER language")
+    print( "     (pt-BR <-> en-US) before concluding there is no record.")
 PY
     hits="$(python3 - "$out" <<'PY'
 import json, sys

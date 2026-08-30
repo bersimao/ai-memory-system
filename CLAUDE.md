@@ -50,6 +50,8 @@ bash cron/curate-audit.test.sh          # curator veto
 python3 cron/split-memory.test.py       # split safety
 python3 cron/jsonl-to-transcript.test.py
 node hooks/project-store.test.js        # store anchoring
+bash scripts/skill-grep.test.sh         # grep -> mem -> section listing
+bash scripts/mem.test.sh                # weak-result retry warning
 ```
 
 Prefer mutation-testing a new case: break the guard on purpose and confirm the
