@@ -37,6 +37,8 @@ MANIFEST=(
   cron/jsonl-to-transcript.test.py
   cron/memsearch-index.sh
   cron/check-caps.sh
+  cron/check-caps.test.sh
+  cron/store-cap.sh
   cron/check-hooks.sh
   cron/check-mem-review.sh
   cron/backup-push.sh

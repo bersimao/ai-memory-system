@@ -41,9 +41,13 @@ anchors this project, then pin it:
 
 - `context/MEMORY.md` — **index first**, scratchpad second: one bullet per page
   in `context/topics/` (`- [Title](topics/<slug>.md) — one line`), then active
-  threads, pending decisions, project-specific quirks. Cap 2,500 chars — when it
-  fills, move the detail into a new `context/topics/<slug>.md` and leave the
-  bullet behind.
+  threads, pending decisions, project-specific quirks. Cap 2,500 chars, unless
+  that store has a `context/.cap` file holding a different integer — read it
+  before trimming (`cron/store-cap.sh` is the parser the cron jobs use, so the
+  alert and the enforcement cannot disagree). When it fills, move the detail into
+  a new `context/topics/<slug>.md` and leave the bullet behind; when a topic
+  CLOSES, drop its index bullet and move the page to `context/topics/archive/` —
+  it stays indexed for search and stops costing startup tokens.
 - `context/topics/<slug>.md` — the indexed pages: one per ticket, feature, or
   gotcha. Not injected at startup; found via the index bullet or search.
 - `context/memory/{YYYY-MM-DD}.md` — daily session logs.
@@ -75,7 +79,7 @@ or "forget about" — route the fact to the right layer:
 | What | Where | Cap |
 |---|---|---|
 | Cross-project environment/workflow gotcha | Global `MEMORY.md` | 4,000 |
-| Project-bound state (active work, this project's quirk, pending decision) | Project `MEMORY.md` | 2,500 |
+| Project-bound state (active work, this project's quirk, pending decision) | Project `MEMORY.md` | 2,500 — **unless** that store has `context/.cap` with another integer; check it before trimming |
 | User profile / preference | `USER.md` | 1,375 |
 | One ticket or sub-topic inside a big project | `topics/<slug>.md` + **one index line** in that project's `MEMORY.md` | — |
 

@@ -34,9 +34,14 @@ check() {  # check <file> <cap> <label>
 check "$HOME/.claude/context/USER.md"   1375 "USER.md"
 check "$HOME/.claude/context/MEMORY.md" 4000 "global MEMORY.md"
 
+# Per-store cap: optional `context/.cap`, default 2500. Parser and rationale
+# live in store-cap.sh, shared with curate.sh and distill.sh so the three
+# cannot drift apart.
+. "$(dirname "${BASH_SOURCE[0]}")/store-cap.sh"
+
 shopt -s nullglob
 for f in "$HOME"/.claude/projects/*/context/MEMORY.md; do
-  check "$f" 2500 "$(basename "$(dirname "$(dirname "$f")")")"
+  check "$f" "$(store_cap "$(dirname "$f")")" "$(basename "$(dirname "$(dirname "$f")")")"
 done
 
 [ -z "$over" ] && exit 0

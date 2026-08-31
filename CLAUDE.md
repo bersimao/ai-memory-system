@@ -52,10 +52,37 @@ python3 cron/jsonl-to-transcript.test.py
 node hooks/project-store.test.js        # store anchoring
 bash scripts/skill-grep.test.sh         # grep -> mem -> section listing
 bash scripts/mem.test.sh                # weak-result retry warning
+bash cron/check-caps.test.sh            # per-store cap override + stderr silence
+node hooks/daily-log-nudge.test.js      # nudge: link hints, DST, emitted JSON
 ```
 
 Prefer mutation-testing a new case: break the guard on purpose and confirm the
 test fails. A test that cannot fail is not a test.
+
+### Green is not proof — ask what the assertion cannot see
+
+The `.cap` feature shipped five defects past five green suites in one session
+(2026-08-31). In every one the code was fine and the **assertion** was too weak
+to observe the failure. The pattern is worth more than the individual bugs:
+
+| The assertion looked at | What it could not see |
+|---|---|
+| exit code only | a cap of `0` reported as `2600/0`, indistinguishable from the default |
+| stdout, stderr discarded | a failed redirection spamming the cron log on every store |
+| the string after `$(cat)` | NUL bytes, already spliced away before the regex ran |
+| `.sh` files only | versioned prose telling the agent the old number |
+| the file as a whole | one *mention* reverted while another still satisfied the check |
+
+So when a guard passes, ask **"what is this assertion structurally unable to
+observe?"** — a channel it discards, a transformation upstream of it, a scope it
+never enters. Then mutate *that*, not the case you already thought of. Twice
+here a mutation "passed" because the test case was vacuous: `.cap=0` flags
+everything so the exit code was identical either way, and `25 00` spliced into
+exactly the default value it was supposed to prove had not been used.
+
+Assert the *value*, not just pass/fail; capture stderr rather than discarding
+it; validate bytes when text handling might transform them; and cover the prose
+that instructs the agent, because that is enforcement too.
 
 ## Conventions
 
