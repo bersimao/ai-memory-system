@@ -71,13 +71,14 @@ assert.deepStrictEqual(
   ['link the previous day with [[2026-08-27]]', 'link the demand note with [[Ajuste Saldo PN]]']
 );
 
-// --- the emitted JSON: two channels, two different payloads -----------------
-// `reason` reaches the model, `systemMessage` only the user's terminal, and
-// systemMessage never enters the context (code.claude.com/docs/en/hooks). Both
-// carried the full `msg` until 2026-08-31, which made the USER read an
-// instruction addressed to the agent ("Do not announce that you logged it").
-// Shortening the wrong one would silently gut the nudge: the spec the agent
-// follows lives in `reason`, so that half must stay complete.
+// --- the emitted JSON: `reason` is the one channel proven to reach Claude ---
+// 2026-08-31: briefly shortened `systemMessage` on the belief it, not `reason`,
+// was shown to the user — backwards. Claude Code displays `reason` to the user
+// verbatim as "Stop hook error: <reason>"; that's confirmed by observing a live
+// session, not just the docs. So `reason` must carry the full instruction
+// (format spec + hints), even though the user sees it too. `systemMessage` is
+// dropped rather than mirrored — its delivery to Claude is unverified, and
+// duplicating the full text into it only doubles what the user reads.
 const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-log-nudge-e2e-'));
 fs.mkdirSync(path.join(repo, '.git'));   // project-store anchors on the git root
 const transcript = path.join(repo, 't.jsonl');
@@ -98,12 +99,10 @@ const emitted = JSON.parse(out);
 
 assert.strictEqual(emitted.decision, 'block', 'must block, or the nudge only displays and dies');
 assert.match(emitted.reason, /Do not announce that you logged it\.$/,
-  'the agent-facing half must keep the full instruction');
+  'reason must keep the full instruction — it is the channel proven to reach Claude');
 assert.match(emitted.reason, /#### Session N/, 'reason must still carry the log format spec');
-assert.doesNotMatch(emitted.systemMessage, /Do not announce/,
-  'the user must not be shown an instruction addressed to the agent');
-assert.match(emitted.systemMessage, /^\[daily-log\] nudged \(9 turns, no log for \d{4}-\d{2}-\d{2}\)$/,
-  'the user-facing half is the short proof-of-fire line');
+assert.strictEqual(emitted.systemMessage, undefined,
+  'no systemMessage — duplicating the full text there only doubles what the user reads');
 
 fs.rmSync(repo, { recursive: true, force: true });
 fs.rmSync(tmp, { recursive: true, force: true });
