@@ -71,5 +71,40 @@ assert.deepStrictEqual(
   ['link the previous day with [[2026-08-27]]', 'link the demand note with [[Ajuste Saldo PN]]']
 );
 
+// --- the emitted JSON: two channels, two different payloads -----------------
+// `reason` reaches the model, `systemMessage` only the user's terminal, and
+// systemMessage never enters the context (code.claude.com/docs/en/hooks). Both
+// carried the full `msg` until 2026-08-31, which made the USER read an
+// instruction addressed to the agent ("Do not announce that you logged it").
+// Shortening the wrong one would silently gut the nudge: the spec the agent
+// follows lives in `reason`, so that half must stay complete.
+const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-log-nudge-e2e-'));
+fs.mkdirSync(path.join(repo, '.git'));   // project-store anchors on the git root
+const transcript = path.join(repo, 't.jsonl');
+fs.writeFileSync(
+  transcript,
+  Array.from({ length: 9 }, () => JSON.stringify({ type: 'user', message: { role: 'user' } })).join('\n')
+);
+
+const out = execFileSync(process.execPath, [path.join(__dirname, 'daily-log-nudge.js')], {
+  input: JSON.stringify({
+    session_id: `test-${process.pid}-${Date.now()}`,   // fresh, or the once-per-session flag eats it
+    transcript_path: transcript,
+    cwd: repo,
+  }),
+  encoding: 'utf8',
+});
+const emitted = JSON.parse(out);
+
+assert.strictEqual(emitted.decision, 'block', 'must block, or the nudge only displays and dies');
+assert.match(emitted.reason, /Do not announce that you logged it\.$/,
+  'the agent-facing half must keep the full instruction');
+assert.match(emitted.reason, /#### Session N/, 'reason must still carry the log format spec');
+assert.doesNotMatch(emitted.systemMessage, /Do not announce/,
+  'the user must not be shown an instruction addressed to the agent');
+assert.match(emitted.systemMessage, /^\[daily-log\] nudged \(9 turns, no log for \d{4}-\d{2}-\d{2}\)$/,
+  'the user-facing half is the short proof-of-fire line');
+
+fs.rmSync(repo, { recursive: true, force: true });
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('ok');

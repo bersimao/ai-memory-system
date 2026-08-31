@@ -125,7 +125,13 @@ function main() {
     `(the measurement taken, the alternative rejected, the cause diagnosed) — the what ` +
     `is cheap to recover later, the why is not.${hintText} Do not announce that you logged it.`;
 
-  process.stdout.write(JSON.stringify({ decision: 'block', reason: msg, systemMessage: msg }));
+  // `reason` goes to the agent, `systemMessage` to the user's terminal, and only
+  // `reason` enters the model context (code.claude.com/docs/en/hooks). Echoing the
+  // full `msg` in both made the user read an instruction addressed to the agent
+  // ("Do not announce that you logged it"). The short form keeps the one thing the
+  // user actually needs from it: proof the nudge fired. Costs no tokens either way.
+  const userMsg = `[daily-log] nudged (${userTurns} turns, no log for ${today})`;
+  process.stdout.write(JSON.stringify({ decision: 'block', reason: msg, systemMessage: userMsg }));
   process.exit(0);
 }
 
