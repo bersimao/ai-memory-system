@@ -125,13 +125,18 @@ function main() {
     `(the measurement taken, the alternative rejected, the cause diagnosed) — the what ` +
     `is cheap to recover later, the why is not.${hintText} Do not announce that you logged it.`;
 
-  // `reason` goes to the agent, `systemMessage` to the user's terminal, and only
-  // `reason` enters the model context (code.claude.com/docs/en/hooks). Echoing the
-  // full `msg` in both made the user read an instruction addressed to the agent
-  // ("Do not announce that you logged it"). The short form keeps the one thing the
-  // user actually needs from it: proof the nudge fired. Costs no tokens either way.
-  const userMsg = `[daily-log] nudged (${userTurns} turns, no log for ${today})`;
-  process.stdout.write(JSON.stringify({ decision: 'block', reason: msg, systemMessage: userMsg }));
+  // 2026-08-31: tried splitting this into a short `systemMessage` for the user
+  // and the full `msg` in `reason`, on the belief that `reason` is agent-only
+  // and `systemMessage` is what reaches the terminal. Backwards: Claude Code
+  // shows `reason` to the user verbatim as "Stop hook error: <reason>" (that's
+  // the whole point — it explains why the turn didn't end). Whether
+  // `systemMessage` reaches Claude at all for a Stop block is unverified, and
+  // duplicating the full text into it just doubles what the user reads for no
+  // proven benefit. `reason` alone is the one channel proven to reach Claude
+  // (that's what this hook has been measured against) and is unavoidably
+  // shown to the user too — the trailing "do not announce" line being visible
+  // is an artifact of how blocking works, not a leak to fix.
+  process.stdout.write(JSON.stringify({ decision: 'block', reason: msg }));
   process.exit(0);
 }
 
