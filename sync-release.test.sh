@@ -93,6 +93,129 @@ out=$(run --from-home); rc=$?
   || bad "false positive on legitimate \$HOME; rc=$rc"
 printf 'clean\n' > "$src/cron/distill.sh"; run --from-home >/dev/null 2>&1
 
+# 9 — REGRESSION (2026-09-01): local POLICY prose in a shipped code file. The
+# real leak was a comment in cron/backup-push.sh citing a section of the author's
+# personal instructions file. It carried no absolute path and no username, so the
+# path pattern scored zero and the sync reported the release clean.
+#
+# The rule is deny-by-default, so these probes vary the SYNTAX on purpose: a
+# line comment, a TRAILING comment, a Python docstring, a bare string. The first
+# version of this guard anchored comments to the start of a line and knew nothing
+# about docstrings — two of these four walked straight through it.
+# Two axes vary together: the COMMENT SYNTAX (a syntax-keyed guard misses
+# docstrings and trailing comments) and the way the path is SPELLED. Every
+# spelling below defeated an earlier version of this guard:
+#   ~/...             the only one the first pattern handled
+#   ${HOME}/...       brace form — flagged by Codex
+#   "$HOME"/...       quotes between prefix and slash
+#   path.join(...)    no "/.claude/" substring at all; how every shipped .js does it
+C='~/.cla''ude'; D='$HOME/.cla''ude'; E='${HOME}/.cla''ude'
+i=0
+for probe in "cron/backup-push.sh|# see %s for the rule|line comment, ~" \
+             "hooks/daily-log-nudge.js|const X = 30;  // per %s|trailing comment, \${HOME}" \
+             "cron/split-memory.py|\"\"\"See %s for the rule.\"\"\"|docstring, \"\$HOME\"" \
+             "scripts/mem|MSG='see %s'|bare string, ~"; do
+  file="${probe%%|*}"; rest="${probe#*|}"; tmpl="${rest%%|*}"; kind="${rest##*|}"
+  i=$((i+1))
+  case $i in
+    1) ref="$C/CLAUDE.md" ;;
+    2) ref="$E/commands/commit.md" ;;
+    3) ref="\"$D\"/skills/db" ;;
+    4) ref="$C/settings.json" ;;
+  esac
+  # shellcheck disable=SC2059
+  printf "$tmpl\n" "$ref" >> "$src/$file"
+  out=$(run --from-home); rc=$?
+  if [ $rc -ne 0 ] && grep -q ABORT <<<"$out" \
+     && ! grep -q "$ref" "$dst/$file" 2>/dev/null; then
+    # Assert the INVARIANT (prose does not reach the release), not the mechanism:
+    # case 6 commits the tree, so from here the guard reverts instead of deleting.
+    ok "policy reference in $file ($kind) is kept out of the release"
+  else
+    bad "policy reference in $file ($kind) slipped through; rc=$rc"
+  fi
+  printf 'clean\n' > "$src/$file"; run --from-home >/dev/null 2>&1
+done
+
+# 9b — the JS form. `path.join(home, '.claude', 'commands', ...)` contains no
+# "/.claude/" substring anywhere, so every path-shaped pattern missed it — and
+# that is how all eight shipped .js files build their paths.
+DOT='.cla''ude'                                  # concatenated OUTSIDE quotes, or
+                                                # printf emits the two quotes literally
+printf "const p = path.join(home, '%s', 'commands', 'commit.md');\n" "$DOT" \
+  >> "$src/hooks/memory-inject.js"
+out=$(run --from-home); rc=$?
+if [ $rc -ne 0 ] && grep -q ABORT <<<"$out" \
+   && ! grep -q "commit.md" "$dst/hooks/memory-inject.js" 2>/dev/null; then
+  ok "policy reference built with path.join is caught"
+else
+  bad "path.join form slipped through; rc=$rc"
+fi
+printf 'clean\n' > "$src/hooks/memory-inject.js"; run --from-home >/dev/null 2>&1
+
+# 10 — the exemption list is what keeps the rule usable. cron/check-hooks.sh
+# genuinely reads the settings file; a guard that fired there would be switched
+# off within a week. Named in CONFIG_OK, visible to a reviewer.
+printf 'SETTINGS="%s/settings.json"\n' "$D" >> "$src/cron/check-hooks.sh"
+out=$(run --from-home); rc=$?
+[ $rc -eq 0 ] && ! grep -q ABORT <<<"$out" \
+  && ok "a file named in CONFIG_OK may operate on the config surface" \
+  || bad "false positive on the exempted file; rc=$rc"
+printf 'clean\n' > "$src/cron/check-hooks.sh"; run --from-home >/dev/null 2>&1
+
+# 10a — the SECOND exempted file. memsearch-index.sh indexes the skills' knowledge
+# dirs, and was passing the earlier guard only because of the quoting gap. Without
+# this case, dropping it from CONFIG_OK breaks nothing in the suite while breaking
+# the real sync.
+printf '  "%s"/skills/*/knowledge \\\n' "$D" >> "$src/cron/memsearch-index.sh"
+out=$(run --from-home); rc=$?
+[ $rc -eq 0 ] && ! grep -q ABORT <<<"$out" \
+  && ok "the skills indexer may read the skills tree" \
+  || bad "false positive on memsearch-index.sh; rc=$rc"
+printf 'clean\n' > "$src/cron/memsearch-index.sh"; run --from-home >/dev/null 2>&1
+
+# 10c — the delimiters around commands|skills|agents are load-bearing. Those are
+# ordinary English words; without a quote or slash around them, any comment that
+# mentions the store and the word "commands" in prose would abort the release.
+printf '# the .cla''ude store holds no commands of its own\n' >> "$src/cron/distill.sh"
+out=$(run --from-home); rc=$?
+[ $rc -eq 0 ] && ! grep -q ABORT <<<"$out" \
+  && ok "a bare word in prose is not a config reference" \
+  || bad "false positive on prose using the word commands; rc=$rc"
+printf 'clean\n' > "$src/cron/distill.sh"; run --from-home >/dev/null 2>&1
+
+# 10b — ...and the exemption is per FILE, not blanket: the same line in a file
+# that is not on the list is still a leak. Without this, CONFIG_OK could be
+# widened to everything and every case above would still pass.
+printf 'SETTINGS="%s/settings.json"\n' "$D" >> "$src/cron/distill.sh"
+out=$(run --from-home); rc=$?
+[ $rc -ne 0 ] && grep -q ABORT <<<"$out" \
+  && ok "a file NOT in CONFIG_OK may not name the config surface" \
+  || bad "unexempted config reference slipped through; rc=$rc"
+printf 'clean\n' > "$src/cron/distill.sh"; run --from-home >/dev/null 2>&1
+
+# 10d — the .claude context is load-bearing too, in the other direction: a bare
+# filename with no store path is generic mechanism talk, not a config reference.
+# Without this case the context filter could be dropped and everything still pass.
+# The cost is stated in CLAUDE.md: "per the user's settings.json" would be missed.
+printf '# the harness reads settings.json at startup\n' >> "$src/cron/distill.sh"
+out=$(run --from-home); rc=$?
+[ $rc -eq 0 ] && ! grep -q ABORT <<<"$out" \
+  && ok "a bare filename without the store path is not a config reference" \
+  || bad "false positive on a generic settings.json mention; rc=$rc"
+printf 'clean\n' > "$src/cron/distill.sh"; run --from-home >/dev/null 2>&1
+
+# 11 — docs are exempt: telling the reader to edit their own instructions file is
+# what the docs are FOR. A Markdown heading starts with `#`, so it is
+# comment-shaped; if the scan were not scoped to code directories, every doc that
+# names the config file would abort the release.
+printf "Append this to %s/CLAUDE.md\n## Editing %s/CLAUDE.md\n" "$C" "$C" >> "$dst/README.md"
+out=$(run --from-home); rc=$?
+[ $rc -eq 0 ] && ! grep -q ABORT <<<"$out" \
+  && ok "docs may instruct the reader about their own config" \
+  || bad "false positive on documentation; rc=$rc"
+printf 'clean\n' > "$dst/README.md"
+
 # 5 — the username must not be baked in.
 # Compare against the REAL user running this: writing a name here would repeat
 # exactly the defect this case exists to catch.

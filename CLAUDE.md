@@ -18,6 +18,62 @@ enforced by code that verifies and reverts, never by asking a model nicely:
 When you add a guarantee, add the check that fails when it breaks. Prose in a
 prompt does not count.
 
+## What ships and what doesn't: mechanism vs policy
+
+A live `~/.claude` holds two things. Only one of them is this product.
+
+- **Mechanism (ships)** — code that works on anyone's machine: `hooks/`, `cron/`,
+  `scripts/`, `docs/`, `install.sh`. It *operates on* `context/`, `projects/` and
+  `data/`: the paths are mechanism, the contents are the user's.
+- **Policy (never ships)** — what one machine decides: `CLAUDE.md`, `commands/`,
+  `skills/`, `agents/`, `settings.json`.
+
+The boundary is the `MANIFEST` — an allowlist, so anything unlisted is private by
+default. Note that shape is not membership: a hook with tests can still be pure
+policy (a push-approval gate is a hook, and it is nobody else's business).
+
+**The rule inside a shipped file:** shipped code (`hooks/`, `cron/`, `scripts/`)
+may not name the config surface **at all, in any syntax**. The few files that
+genuinely operate on it are listed by name in `CONFIG_OK` in `sync-release.sh`,
+where a reviewer sees them — currently just `cron/check-hooks.sh`, which reads the
+settings file to verify the hooks are installed. `docs/` and `README.md` are out
+of scope: telling the reader to edit their own instructions file is what they are
+for.
+
+Deny-by-default, and it took three tries to get there because each earlier version
+modelled a **form** instead of suspecting the reference:
+
+| attempt | modelled | what walked through |
+|---|---|---|
+| syntax | "config may appear in code, never in a comment" | trailing comments (anchored to line start), the docstrings in four shipped `.py` files |
+| path shape | `(~\|$HOME)/.claude/<config>` | `${HOME}/…`, `"$HOME"/…`, and `path.join(home, '.claude', …)` — which is how all eight shipped `.js` files build paths, so half the release |
+| co-occurrence | a line naming the store AND something on the config surface | *(current)* spelling, quoting and separators stop mattering |
+
+Same lesson as the shell-parsing one: an enumerator has to recognise every form,
+and there is always one more. Match on what the leak *is about*, not how it is
+written, and let the few legitimate files prove themselves by name.
+
+The current rule has two deliberate limits, both pinned by test cases so they
+cannot be lost by accident: a **bare word** (`the store holds no commands`) is not
+a reference, and a **bare filename with no store path** (`reads settings.json at
+startup`) is not either. The cost is that `# per the user's settings.json` would
+be missed — accepted, because the alternative fires on ordinary prose and a guard
+that cries wolf gets switched off.
+
+Why it needed its own check at all: the path tripwire models a leak as "text that
+identifies a machine or a person". On 2026-09-01 a comment citing a section of the
+author's personal instructions file shipped in `cron/backup-push.sh` and scored
+**zero** matches — no absolute path, no username, nothing to match. Two classes of
+leak, two checks. Neither catches a client name in prose, or policy that names
+nothing ("push to main is fine here"); that is still a review question when you
+add to the MANIFEST.
+
+`CONFIG_OK` in `sync-release.sh` lists the files that legitimately operate on the
+config surface — `cron/check-hooks.sh` (reads the settings file) and
+`cron/memsearch-index.sh` (indexes the skills' knowledge dirs). Both are covered by
+their own test cases: dropping either from the list must fail the suite, or the
+list decays into a place where things get quietly added.
+
 ## Layout
 
 ```

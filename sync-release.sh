@@ -112,8 +112,58 @@ if [ "$mode" = --from-home ]; then
     hit=$(sed 's/\$HOME//g; s/${HOME}//g' "$f" | grep -nE "$pat" 2>/dev/null) || true
     [ -n "$hit" ] && bad="${bad}${bad:+$'\n'}$(printf '%s\n' "$hit" | sed "s|^|$f:|")"
   done
+  # SECOND RULE, a different class of leak. The pattern above models a leak as
+  # "text that identifies a machine or a person". It is blind to the other kind:
+  # local POLICY prose. On 2026-09-01 a comment citing a section of the author's
+  # personal instructions file shipped inside cron/backup-push.sh and scored ZERO
+  # matches here — no absolute path, no username, nothing to match.
+  #
+  # This rule is DENY-BY-DEFAULT, and that is the whole design. The first attempt
+  # keyed on syntax — "the config surface may appear in code, never in a comment" —
+  # and was immediately incomplete: it anchored comments to the start of a line, so
+  # `CUT_ALERT=30  # per <config>` slipped through, and it knew nothing about the
+  # docstrings in the four shipped .py files. Enumerating comment syntaxes is the
+  # same losing game as parsing shell to catch a push. So: shipped code may not
+  # name the config surface AT ALL, in any syntax, and the few files that genuinely
+  # operate on it are listed here by name where a reviewer can see them.
+  #
+  # docs/ and README.md are out of scope on purpose — telling the reader to edit
+  # their own instructions file is what they are FOR.
+  # Match by CO-OCCURRENCE on the line, not by path shape. Three misses killed the
+  # path-shaped version, all the same mistake — modelling how the reference is
+  # SPELLED:
+  #   ${HOME}/.claude/CLAUDE.md         the brace form (the path tripwire below
+  #                                     already strips both forms; this rule did not)
+  #   "$HOME"/.claude/skills/...        quotes between the prefix and the slash
+  #   path.join(home, '.claude', ...)   no "/.claude/" substring exists at all, and
+  #                                     this is how all 8 shipped .js files build
+  #                                     their paths — half the release, uncovered
+  # So: a line that mentions the .claude root (or homedir()) AND names something on
+  # the config surface. Spelling, quoting and separators stop mattering.
+  # `.claude` alone: every config path goes through it, and the shipped .js files
+  # name a `home` variable on the join line, not homedir(). An `|homedir`
+  # alternative was here briefly and no probe could reach it — dead branch, removed
+  # rather than left untested.
+  ctx='[.]claude'
+  cfgtok="CLAUDE[.]md|settings[.]json|['\"/](commands|skills|agents)['\"/]"
+  # Files that genuinely OPERATE on the config surface, named where a reviewer sees
+  # them. memsearch-index.sh was passing only BECAUSE of the quoting gap above —
+  # closing the gap without listing it here would have aborted the real sync.
+  CONFIG_OK=(cron/check-hooks.sh          # reads the settings file to verify hooks
+             cron/memsearch-index.sh)     # indexes the skills' knowledge/references
+  for f in "${scan[@]}"; do
+    rel="${f#$DST/}"
+    case "$rel" in hooks/*|cron/*|scripts/*) ;; *) continue ;; esac
+    # Exact equality, not a grep: substring matching would silently exempt any
+    # path that happened to contain an exempted one, and no fixture in the suite
+    # would have shown it. Designed out rather than tested for.
+    for okf in "${CONFIG_OK[@]}"; do [ "$rel" = "$okf" ] && continue 2; done
+    hit=$(grep -nE "$ctx" "$f" 2>/dev/null | grep -E "$cfgtok") || true
+    [ -n "$hit" ] && bad="${bad}${bad:+$'\n'}$(printf '%s\n' "$hit" | sed "s|^|$f:|")"
+  done
+
   if [ -n "$bad" ]; then
-    echo "ABORT: a personal path reached the release:"; echo "$bad"
+    echo "ABORT: personal content reached the release:"; echo "$bad"
     # Revert, not just warn. The warning scrolls off screen and a later
     # `git add -A` commits the leak anyway — that is exactly how ephemeral
     # state entered this project's repos before. A contaminated file goes back
@@ -138,7 +188,7 @@ if [ "$mode" = --from-home ]; then
     done
     rc=1
   else
-    echo "tripwire: no personal path in the release ✔"
+    echo "tripwire: no personal path or policy prose in the release ✔"
   fi
 fi
 
