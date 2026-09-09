@@ -30,7 +30,11 @@ lost to every future project.
 2. Read the target file **in full**.
 3. **Dedup**: scan for a substring match. If the fact is already there, update it
    rather than appending a near-duplicate.
-4. **Cap check**: count *characters*, not bytes — accents inflate byte counts.
+4. **Cap check**: measure the size the file will have **after** the write —
+   `current + len(addition)`, minus whatever a replace removes. Checking the file
+   as it stands lets a store at 2,400 of 2,500 pass and land at 2,700, with
+   nothing noticing until the next `check-caps.sh` run. Split first, then write.
+   Count *characters*, not bytes — accents inflate byte counts.
    Over cap → split (below), do not compress.
 5. Write.
 6. Confirm: "Saved — will be active from next session."
