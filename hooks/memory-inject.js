@@ -206,7 +206,20 @@ const redactSecrets = (text) => text
   // LAST '@' before the next '/' or space, i.e. the real host separator) — a
   // password containing '@' otherwise truncated the match at that first '@'
   // and leaked the rest of the password after it.
-  .replace(/(:\/\/[^/\s:@]+):[^/\s]+@/g, '$1:[REDACTED]@')
+  //
+  // Demonstrated corruption 2026-09-10: this exact fix's own explanation used
+  // `postgres://user:pass@host` and `mongodb://user:hunter2@...` as
+  // illustrative examples — both textbook placeholders, and this rule redacted
+  // them as if real. A connection-string regex cannot tell a placeholder from
+  // a real credential by shape alone, so exclude the well-known placeholder
+  // words by name — "pass"/"password" and "hunter2" (the canonical example
+  // password) are the two that actually occurred; the fixed word list is a
+  // clear ceiling: any password that happens to equal a different placeholder
+  // word not listed here still gets redacted anyway (over-redaction, the safe
+  // direction), and a REAL password that happens to be spelled "hunter2" would
+  // wrongly survive — accepted, "changeme"-shaped words are already unsafe
+  // passwords regardless of this filter.
+  .replace(/(:\/\/[^/\s:@]+):(?!(?:pass(?:word)?|senha|hunter2|changeme|example|xxx+)@)[^/\s]+@/gi, '$1:[REDACTED]@')
   .replace(/((?:TOKEN|SECRET|PASSWORD|SENHA|SEGREDO|API_KEY|APIKEY)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)\S+/gi, '$1[REDACTED]');
 
 const today = new Date();
