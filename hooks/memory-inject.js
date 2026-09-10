@@ -144,27 +144,145 @@ const demandsSection = () => demandsFor(anchor.dir).map((d) => {
 const parts = [];
 const add = (label, body) => { if (body) parts.push(`### ${label}\n${body}`); };
 
+// ORDER IS THE TRUNCATION POLICY. The harness persists a hook's stdout to a
+// file and injects only the first ~2KB when the output exceeds ~10KB (smallest
+// persisted output observed: 10,463 bytes). Whatever is emitted LAST is what
+// the session silently loses. Global layers are reconstructible — they are the
+// same in every session, and USER.md/MEMORY.md are two grep-able paths. The
+// project layer is not: it is the only part that is unique to this session, and
+// it was third in line until 2026-09-09, which meant every store whose snapshot
+// crossed the threshold started sessions blind to its own project memory.
+// So: project-specific first, global last. Keeping the total under ~10KB is
+// still the actual fix (see cron/check-caps.sh) — this only decides what
+// survives when it is not.
 add('Possible renamed project — orphaned store?', renameWarning());
 add('Project store anchor', anchorSection());
 
-add('Global USER.md', read(path.join(home, '.claude', 'context', 'USER.md')));
-add('Global MEMORY.md', read(path.join(home, '.claude', 'context', 'MEMORY.md')));
-
 add('Project MEMORY.md', read(path.join(ctx, 'MEMORY.md')));
 add('Demands on this project (auto, from demands.json)', demandsSection());
+
+// SNAP_TRUNC_PROVEN / SNAP_BUDGET: see the truncation-policy comment below,
+// where the byte math against them is done. Declared here because the
+// transcript fallback (next block) also needs to size itself against the
+// budget before the truncation check runs.
+const SNAP_TRUNC_PROVEN = 10463;
+const SNAP_BUDGET = 10000;
+
+// Crude, line-oriented secret redaction — not a real scanner, just enough to
+// stop the obvious cases (a pasted token, an `export TOKEN=...`) from being
+// echoed back into every session that hits this fallback. Ceiling: anything
+// not matching one of these shapes still gets through. Upgrade path: run the
+// existing `security-review` secret patterns here if this keeps missing.
+const redactSecrets = (text) => text
+  .replace(/\b(gl|gh[pousr]|sk|xox[baprs])[a-zA-Z]*[_-][A-Za-z0-9_.-]{10,}/g, '[REDACTED]')
+  .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED]')
+  .replace(/\bBearer\s+[A-Za-z0-9._-]{10,}/g, 'Bearer [REDACTED]')
+  .replace(/((?:TOKEN|SECRET|PASSWORD|API_KEY|APIKEY)\w*\s*[=:]\s*)\S+/gi, '$1[REDACTED]');
 
 const today = new Date();
 const yesterday = new Date(today.getTime() - 86400000);
 const todayLog = read(path.join(ctx, 'memory', `${localDate(today)}.md`));
 add(`Daily log ${localDate(today)}`, todayLog);
 if (!todayLog) {
-  add(`Daily log ${localDate(yesterday)}`, read(path.join(ctx, 'memory', `${localDate(yesterday)}.md`)));
+  // Today's curated log only exists once the nudge fires (8+ real turns, at a
+  // real Stop) or backfill runs (overnight, skips "today" on purpose) — so a
+  // same-day /clear before either has a chance can wipe visible context with
+  // nothing curated to reload, even though transcript-capture.js already wrote
+  // every turn to disk, unconditionally, all along. Tail of that raw transcript
+  // is the cheap, deterministic fallback: no LLM distillation needed, and it is
+  // exactly the part a same-day /clear needs back.
+  //
+  // Two risks a curated log doesn't have, because a human/LLM summary never
+  // reproduces either verbatim: (1) raw transcript can carry secrets typed or
+  // echoed into the session (redacted above, best-effort); (2) it is much
+  // longer per byte of signal than a curated summary, so a fixed cap here was
+  // pushing otherwise-small snapshots over SNAP_TRUNC_PROVEN. Budget it
+  // dynamically against what the rest of the snapshot (including the two
+  // global sections still to come) is already using instead.
+  const userMd = read(path.join(home, '.claude', 'context', 'USER.md'));
+  const globalMd = read(path.join(home, '.claude', 'context', 'MEMORY.md'));
+  const usedSoFar = Buffer.byteLength(parts.join('\n\n'), 'utf8') +
+    Buffer.byteLength(userMd, 'utf8') + Buffer.byteLength(globalMd, 'utf8');
+  const SAFETY_MARGIN = 1500; // headers, labels, the redaction/truncation markers themselves
+  const transcriptBudget = Math.max(0, SNAP_BUDGET - usedSoFar - SAFETY_MARGIN);
+
+  const rawTranscript = read(path.join(ctx, 'transcripts', `${localDate(today)}.md`));
+  if (rawTranscript && transcriptBudget > 200) {
+    const clean = redactSecrets(rawTranscript);
+    // transcriptBudget is a BYTE count; .slice() counts UTF-16 code units.
+    // Portuguese text (á/ã/ç) and the marker below are multi-byte in UTF-8, so
+    // slicing by character count let the real byte size run past the budget
+    // this was computed to respect. Slice the UTF-8 buffer itself instead —
+    // toString('utf8') replaces a chopped leading byte with U+FFFD, which is
+    // fine for a diagnostic fallback.
+    const buf = Buffer.from(clean, 'utf8');
+    const tail = buf.length > transcriptBudget
+      ? '…(truncated)…\n' + buf.slice(-transcriptBudget).toString('utf8')
+      : clean;
+    add(`Today's transcript ${localDate(today)} (raw, no curated log yet)`, tail);
+  } else {
+    add(`Daily log ${localDate(yesterday)}`, read(path.join(ctx, 'memory', `${localDate(yesterday)}.md`)));
+  }
+
+  add('Global USER.md', userMd);
+  add('Global MEMORY.md', globalMd);
+} else {
+  add('Global USER.md', read(path.join(home, '.claude', 'context', 'USER.md')));
+  add('Global MEMORY.md', read(path.join(home, '.claude', 'context', 'MEMORY.md')));
 }
 
+// Self-measured truncation warning.
+//
+// The harness persists a hook's stdout to a file and injects only the first
+// ~2KB of it once the output crosses ~10KB. It says so — "Output too large …
+// Full output saved to <path>" — but the session has to NOTICE, and on
+// 2026-09-09 one did not: it asserted a fact was "in context" because the hook
+// injects project MEMORY.md, when that section had been cut away.
+//
+// This is the only place the size can be known exactly. Anything downstream
+// (see cron/check-caps.sh) has to re-derive it by summing source files, which
+// misses this framing and cannot resolve a store's anchor back from its encoded
+// directory name — `-home-user-ai-claude-mem` is equally `.../ai/claude-mem`
+// and `.../ai/claude/mem`. So the sweep screens; this measures.
+//
+// Two different numbers, and conflating them makes the warning self-defeating.
+//
+// SNAP_TRUNC_PROVEN — the smallest hook stdout observed to have been persisted
+//   and truncated, across 379 samples: 10,463B. At or above this, truncation is
+//   a FACT. The real threshold is somewhere <= this; the largest surviving
+//   output was never observed, so the band below is genuinely unknown.
+// SNAP_BUDGET — the "stay under this" line the sweep screens against (10,000).
+//   Conservative on purpose, which is exactly why it must NOT gate this warning.
+//
+// The warning costs ~430B. Firing it in the unknown band (BUDGET..PROVEN) could
+// push a snapshot that the harness would have injected INTACT past the real
+// limit — manufacturing the truncation it announces, and announcing it falsely.
+// A diagnostic that causes the fault it reports is worse than no diagnostic, so
+// it fires only where truncation is already certain and its bytes change
+// nothing. The unknown band is left to cron/check-caps.sh, which runs out of
+// band and cannot perturb what it measures.
 if (parts.length) {
-  process.stdout.write(
-    '## Memory snapshot (session startup)\n' +
-    'Frozen snapshot loaded once. Mid-session writes take effect next session.\n\n' +
-    parts.join('\n\n') + '\n'
-  );
+  const header = '## Memory snapshot (session startup)\n' +
+    'Frozen snapshot loaded once. Mid-session writes take effect next session.\n\n';
+  let out = header + parts.join('\n\n') + '\n';
+  const size = Buffer.byteLength(out, 'utf8');
+
+  if (size >= SNAP_TRUNC_PROVEN) {
+    // Goes FIRST, so it survives the truncation it is reporting. Naming the
+    // biggest section makes the fix actionable instead of "trim something".
+    const biggest = parts
+      .map((p) => ({ label: p.slice(4, p.indexOf('\n')), bytes: Buffer.byteLength(p, 'utf8') }))
+      .sort((a, b) => b.bytes - a.bytes)[0];
+    out = header +
+      `### ⚠ Snapshot truncated — sections below are missing\n` +
+      `${size}B of content, past the ${SNAP_TRUNC_PROVEN}B point where the harness injects ` +
+      `only the first ~2KB and saves the rest to the file named in the ` +
+      `"Output too large" notice. Do NOT treat a missing section as absent memory: ` +
+      `read that file before concluding anything is not recorded.\n` +
+      `Biggest section: ${biggest.label} (${biggest.bytes}B), budget ${SNAP_BUDGET}B. ` +
+      `Trim it, or run \`~/.claude/cron/check-caps.sh\`.\n\n` +
+      parts.join('\n\n') + '\n';
+  }
+
+  process.stdout.write(out);
 }
