@@ -210,16 +210,17 @@ const redactSecrets = (text) => text
   // Demonstrated corruption 2026-09-10: this exact fix's own explanation used
   // `postgres://user:pass@host` and `mongodb://user:hunter2@...` as
   // illustrative examples — both textbook placeholders, and this rule redacted
-  // them as if real. A connection-string regex cannot tell a placeholder from
-  // a real credential by shape alone, so exclude the well-known placeholder
-  // words by name — "pass"/"password" and "hunter2" (the canonical example
-  // password) are the two that actually occurred; the fixed word list is a
-  // clear ceiling: any password that happens to equal a different placeholder
-  // word not listed here still gets redacted anyway (over-redaction, the safe
-  // direction), and a REAL password that happens to be spelled "hunter2" would
-  // wrongly survive — accepted, "changeme"-shaped words are already unsafe
-  // passwords regardless of this filter.
-  .replace(/(:\/\/[^/\s:@]+):(?!(?:pass(?:word)?|senha|hunter2|changeme|example|xxx+)@)[^/\s]+@/gi, '$1:[REDACTED]@')
+  // them as if real. Tried excluding known placeholder words ("pass",
+  // "hunter2", "changeme", ...) via negative lookahead — wrong trade-off,
+  // reverted same day: "password" and "changeme" are not just placeholders,
+  // they are exactly the words real people leave as real, working (weak)
+  // credentials on dev/staging systems. An allowlist keyed on the VALUE
+  // can't tell those apart — it can only pick a side, and this is a
+  // fail-closed path: over-redacting a doc example is a cosmetic annoyance,
+  // under-redacting a real "user:password@host" is the actual harm this
+  // function exists to prevent. So: no placeholder exception. A documentation
+  // example gets redacted along with everything else — accepted, not a bug.
+  .replace(/(:\/\/[^/\s:@]+):[^/\s]+@/g, '$1:[REDACTED]@')
   .replace(/((?:TOKEN|SECRET|PASSWORD|SENHA|SEGREDO|API_KEY|APIKEY)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)\S+/gi, '$1[REDACTED]');
 
 const today = new Date();
