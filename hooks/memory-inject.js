@@ -173,11 +173,30 @@ const SNAP_BUDGET = 10000;
 // echoed back into every session that hits this fallback. Ceiling: anything
 // not matching one of these shapes still gets through. Upgrade path: run the
 // existing `security-review` secret patterns here if this keeps missing.
+//
+// Two bugs fixed 2026-09-10: the generic KEY/TOKEN/... rule used `\w*` right
+// after the keyword, which matches into an ordinary word that merely starts
+// with one — "secretaria"/"secretária" (PT-BR "secretary") both start with
+// "secret", so "área de secretaria: administrativa" was getting its back half
+// redacted as if "secretaria" were a variable name. Real env-var suffixes are
+// separator-joined (`AUTH_TOKEN_V2`, `API_KEY_2`) — requiring the separator
+// keeps those while refusing to swallow a plain continuation of the same
+// word. Second, coverage: the prefix list only caught GitLab/GitHub/OpenAI/
+// Slack-shaped tokens and missed the other common shapes entirely — a JWT, a
+// PEM private key block, and a password embedded in a connection URL
+// (`postgres://user:pass@host`) — now covered too.
 const redactSecrets = (text) => text
-  .replace(/\b(gl|gh[pousr]|sk|xox[baprs])[a-zA-Z]*[_-][A-Za-z0-9_.-]{10,}/g, '[REDACTED]')
+  .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[REDACTED-key]')
+  .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[REDACTED-jwt]')
+  .replace(/\b(gl|gh[pousr]|sk|pk|rk|xox[baprs]|npm)[a-zA-Z]*[_-][A-Za-z0-9_.-]{10,}/g, '[REDACTED]')
   .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED]')
   .replace(/\bBearer\s+[A-Za-z0-9._-]{10,}/g, 'Bearer [REDACTED]')
-  .replace(/((?:TOKEN|SECRET|PASSWORD|API_KEY|APIKEY)\w*\s*[=:]\s*)\S+/gi, '$1[REDACTED]');
+  // Password class deliberately allows '@' (greedy + backtrack lands on the
+  // LAST '@' before the next '/' or space, i.e. the real host separator) — a
+  // password containing '@' otherwise truncated the match at that first '@'
+  // and leaked the rest of the password after it.
+  .replace(/(:\/\/[^/\s:@]+):[^/\s]+@/g, '$1:[REDACTED]@')
+  .replace(/((?:TOKEN|SECRET|PASSWORD|API_KEY|APIKEY)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)\S+/gi, '$1[REDACTED]');
 
 const today = new Date();
 const yesterday = new Date(today.getTime() - 86400000);
