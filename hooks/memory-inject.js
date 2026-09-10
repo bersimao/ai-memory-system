@@ -174,7 +174,7 @@ const SNAP_BUDGET = 10000;
 // not matching one of these shapes still gets through. Upgrade path: run the
 // existing `security-review` secret patterns here if this keeps missing.
 //
-// Two bugs fixed 2026-09-10: the generic KEY/TOKEN/... rule used `\w*` right
+// Three bugs fixed 2026-09-10: the generic KEY/TOKEN/... rule used `\w*` right
 // after the keyword, which matches into an ordinary word that merely starts
 // with one — "secretaria"/"secretária" (PT-BR "secretary") both start with
 // "secret", so "área de secretaria: administrativa" was getting its back half
@@ -184,11 +184,22 @@ const SNAP_BUDGET = 10000;
 // word. Second, coverage: the prefix list only caught GitLab/GitHub/OpenAI/
 // Slack-shaped tokens and missed the other common shapes entirely — a JWT, a
 // PEM private key block, and a password embedded in a connection URL
-// (`postgres://user:pass@host`) — now covered too.
+// (`postgres://user:pass@host`) — now covered too. Third, the prefix list's
+// `[a-zA-Z]*` filler before the separator over-matched: it caught ANY
+// hyphenated identifier starting with "sk"/"pk"/"gl"/etc. followed by 10+
+// chars — which is most of this codebase's own vocabulary ("skill-creator-
+// config", "global-memory-store"). Real token prefixes are fixed strings,
+// never a wildcard run of extra letters — enumerating them exactly removes
+// the false positives without losing any real shape. Also added SENHA/
+// SEGREDO (PT-BR password/secret) since these transcripts are mostly PT-BR
+// and the keyword list was English-only; deliberately did NOT add CHAVE
+// ("key") — in this user's actual domain (SAP B1 / SQL) "chave primária" /
+// "chave estrangeira" is constant, non-secret vocabulary, so that word would
+// reintroduce the exact corruption class this fix removes.
 const redactSecrets = (text) => text
   .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[REDACTED-key]')
   .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[REDACTED-jwt]')
-  .replace(/\b(gl|gh[pousr]|sk|pk|rk|xox[baprs]|npm)[a-zA-Z]*[_-][A-Za-z0-9_.-]{10,}/g, '[REDACTED]')
+  .replace(/\b(?:glpat-|gh[pousr]_|sk-|(?:sk|pk|rk)_(?:live|test)_|npm_|xox[baprs]-)[A-Za-z0-9_.-]{8,}/g, '[REDACTED]')
   .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED]')
   .replace(/\bBearer\s+[A-Za-z0-9._-]{10,}/g, 'Bearer [REDACTED]')
   // Password class deliberately allows '@' (greedy + backtrack lands on the
@@ -196,7 +207,7 @@ const redactSecrets = (text) => text
   // password containing '@' otherwise truncated the match at that first '@'
   // and leaked the rest of the password after it.
   .replace(/(:\/\/[^/\s:@]+):[^/\s]+@/g, '$1:[REDACTED]@')
-  .replace(/((?:TOKEN|SECRET|PASSWORD|API_KEY|APIKEY)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)\S+/gi, '$1[REDACTED]');
+  .replace(/((?:TOKEN|SECRET|PASSWORD|SENHA|SEGREDO|API_KEY|APIKEY)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)\S+/gi, '$1[REDACTED]');
 
 const today = new Date();
 const yesterday = new Date(today.getTime() - 86400000);
