@@ -8,6 +8,9 @@ set -uo pipefail
 
 LOG="$HOME/.memsearch/cron.log"
 LLM_RUN="$HOME/.claude/scripts/llm-run"
+# Per-store cap (optional context/.cap, default 2500) — shared with
+# check-caps.sh and distill.sh so the alert and the enforcement agree.
+. "$(dirname "${BASH_SOURCE[0]}")/store-cap.sh"
 
 # Audit trail + veto. Curation must COMPRESS — same facts, fewer chars. A big
 # shrink is deletion, not compression, and an unattended LLM running with
@@ -148,11 +151,12 @@ audit_and_veto() {
     # alone will not fix this"; that was literally true. Being over cap is a
     # sufficient condition by itself. (CLARK/addon-controle-qualidade, 2516
     # chars with its daily log idle since 07-23, was the case that exposed it.)
+    cap=$(store_cap "$ctx")
     if [ -z "$(find "$ctx/memory" -maxdepth 1 -name '*.md' -mtime -7 -print -quit 2>/dev/null)" ] \
-       && [ "$(chars "$ctx/MEMORY.md")" -le 2500 ]; then
+       && [ "$(chars "$ctx/MEMORY.md")" -le "$cap" ]; then
       continue
     fi
-    register "$ctx/MEMORY.md" 2500 "$(basename "$(dirname "$ctx")")"
+    register "$ctx/MEMORY.md" "$cap" "$(basename "$(dirname "$ctx")")"
   done
 
   if [ -z "$TARGETS" ]; then

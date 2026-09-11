@@ -7,6 +7,10 @@ set -uo pipefail
 
 LOG="$HOME/.memsearch/cron.log"
 LLM_RUN="$HOME/.claude/scripts/llm-run"
+# Per-store cap (optional context/.cap, default 2500) — shared with
+# check-caps.sh and curate.sh so the prompt cannot state a cap the tripwire
+# disagrees with.
+. "$(dirname "${BASH_SOURCE[0]}")/store-cap.sh"
 TODAY="$(date -I)"
 PROJECTS_ROOT="$HOME/.claude/projects"
 
@@ -63,7 +67,8 @@ ts() { date -Iseconds; }
 
     echo "distill $(basename "$(dirname "$ctx")")"
 
-    prompt="Read the daily log at ${log_file} and the working memory at ${mem_file}. Extract durable facts from the log (URLs, decisions, preferences, project structure, gotchas) that are NOT already in ${mem_file}. Append them under the appropriate section in ${mem_file}. Enforce the 2500-char cap on ${mem_file} — if appending would exceed it, consolidate existing entries first. If nothing durable is found, leave ${mem_file} unchanged. Do not edit any other file."
+    cap=$(store_cap "$ctx")
+    prompt="Read the daily log at ${log_file} and the working memory at ${mem_file}. Extract durable facts from the log (URLs, decisions, preferences, project structure, gotchas) that are NOT already in ${mem_file}. Append them under the appropriate section in ${mem_file}. Enforce the ${cap}-char cap on ${mem_file} — if appending would exceed it, consolidate existing entries first. If nothing durable is found, leave ${mem_file} unchanged. Do not edit any other file."
 
     # Append-only extract is low-risk → cheap tier (backend mapping lives in llm-run).
     "$LLM_RUN" cheap "$prompt"; rc=$?

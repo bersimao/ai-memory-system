@@ -51,7 +51,11 @@ the recording itself is not your job.
 **Keeps the injected set small on purpose.** Every layer has a character cap
 (1,375 / 4,000 / 2,500). The cap is the whole design: startup context is the
 most expensive tokens you spend, because you pay them in every session whether
-or not you needed them.
+or not you needed them. A project store can override its own with a
+`context/.cap` file — one number for every store was a poor fit once a store
+carried many topic pages, since the index alone grows with their count.
+Malformed or missing, it falls back to the default, which is the stricter
+value, so raising a cap stays deliberate rather than accidental.
 
 **Splits instead of deleting when a file outgrows its cap.** An LLM proposes a
 plan — which sections to move, what to name them; code executes it, verifies no

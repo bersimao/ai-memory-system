@@ -16,6 +16,15 @@ grep -q 'for ctx in' <<<"$code" || { echo "FAIL: did not extract the loop"; exit
 grep -q '^chars() {' <<<"$code" || { echo "FAIL: did not extract chars()"; exit 1; }
 grep -q 'register' <<<"$code" || { echo "FAIL: extracted loop does not call register"; exit 1; }
 
+# curate.sh sources this at the top, so the extracted loop needs it too. Without
+# it `store_cap` is undefined, `cap` comes back empty, and every comparison
+# degrades into `[ N -le "" ]` — which errors and flips the gate open. That is
+# exactly how this test failed on 2026-08-31, when the cap moved into a shared
+# library so the alert (check-caps) and the enforcement (curate) could not drift.
+. "$(dirname "$0")/store-cap.sh"
+[ "$(type -t store_cap)" = function ] \
+  || { echo "FAIL: store-cap.sh did not define store_cap"; exit 1; }
+
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 PROJECTS_ROOT="$T/projects"
 REGISTERED=""
@@ -23,10 +32,11 @@ register() { REGISTERED="${REGISTERED}$3"$'\n'; }   # stub: only records the lab
 [ "$(bash -c "$(sed -n '/^chars() {/p' "$SRC"); chars '$SRC'")" -gt 100 ] \
   || { echo "FAIL: extracted chars() measures nothing"; exit 1; }
 
-mk() { # <label> <chars> <log-age-in-days | "no-log">
+mk() { # <label> <chars> <log-age-in-days | "no-log"> [cap]
   local d="$PROJECTS_ROOT/$1/context"
   mkdir -p "$d"
   head -c "$2" /dev/zero | tr '\0' 'a' >"$d/MEMORY.md"   # ASCII: chars == bytes
+  [ -n "${4:-}" ] && printf '%s\n' "$4" >"$d/.cap"
   [ "$3" = no-log ] && return 0
   mkdir -p "$d/memory"
   : >"$d/memory/2026-01-01.md"
@@ -42,6 +52,12 @@ mk quiet-under-cap  2000 40
 # before any gate (found by the Codex gate, [[2026-08-26]]).
 mk no-log-over-cap  2800 no-log
 mk no-log-under-cap 2000 no-log
+# Per-store .cap: the gate must use THAT number, not the 2500 default. Both are
+# quiet, so the cap is the only way in — which is what makes them a clean probe.
+# Without this pair, curate would keep squeezing a store whose cap was raised,
+# and the alert would say nothing: alarm moved, ceiling didn't.
+mk custom-cap-under 2800 40 4000   # over the default, UNDER its own cap
+mk custom-cap-over  4200 40 4000   # over its own cap
 # Store with a daily log and NO MEMORY.md: nothing to curate, must not blow up.
 mkdir -p "$PROJECTS_ROOT/no-memory/context/memory"
 : >"$PROJECTS_ROOT/no-memory/context/memory/2026-01-01.md"
@@ -61,5 +77,7 @@ dont quiet-under-cap  && echo "ok   quiet under cap is skipped"
 want no-log-over-cap  && echo "ok   NO memory/ over cap registers (fix 2)"
 dont no-log-under-cap && echo "ok   no memory/ under cap is skipped"
 dont no-memory        && echo "ok   store without MEMORY.md is skipped without breaking"
+dont custom-cap-under && echo "ok   .cap=4000: 2800 chars nao entra (respeita o cap do store)"
+want custom-cap-over  && echo "ok   .cap=4000: 4200 chars entra"
 
 [ "$fail" = 0 ] && echo "PASS" || { echo "FAILED"; exit 1; }

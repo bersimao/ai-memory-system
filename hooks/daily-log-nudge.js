@@ -63,6 +63,51 @@ const buildLinkHints = ({ projectDir, yesterday, demands }) => {
   return hints;
 };
 
+// What counts as a user turn. `type:"user"` is the transcript's envelope for far
+// more than the human's prompts: every tool_result comes back as one, slash-command
+// expansions and this hook's own feedback arrive as `isMeta`, background-agent
+// notices as `promptSource:"system"`, a compaction preamble as `isCompactSummary`,
+// an Esc as an `interruptedMessageId` marker, and a local/bash command replays its
+// own output as a plain user string. Measured 2026-09-01 on scratch-claude
+// d9bcf599: 19 raw events for 9 real prompts -- the nudge fired at "10 user turns"
+// on the user's THIRD prompt, which is exactly what MIN_USER_TURNS exists to
+// prevent. Median inflation over 333 sessions: 4x. The threshold means nothing
+// unless the unit it counts is an actual human turn.
+//
+// Prefer the structural flag over the text, but do not trust it alone: the shapes
+// below either carry no distinguishing field at all (`<bash-stdout>` and
+// `<local-command-stderr>` share even the promptId of the `!` command the human
+// typed) or only started carrying one recently -- 2.1.251 marks an interrupt with
+// `interruptedMessageId`, 2.1.238/240 emit the same sentence as a bare text block.
+// A transcript spans versions, so the text match stays as the floor.
+const SYNTHETIC_TEXT =
+  /^\s*(<(local-command-(stdout|stderr|caveat)|bash-(stdout|stderr))>|\[Request interrupted)/;
+
+const isUserTurn = (ev) => {
+  if (ev.type !== 'user' || !ev.message) return false;
+  if (ev.isSidechain || ev.isMeta || ev.isCompactSummary) return false;
+  if (ev.promptSource === 'system') return false;   // task notifications, and whatever
+                                                    // else the harness injects next
+  if (ev.interruptedMessageId) return false;        // the Esc marker is not a prompt
+  const c = ev.message.content;
+  let text;
+  if (Array.isArray(c)) {
+    // Array content is the human's prompt (text, plus images when pasted) or a tool
+    // result coming back; across 9,479 of them here a tool_result block is always
+    // alone, but excluding on its presence also covers a future format that rides a
+    // text block along.
+    if (c.some((b) => b && b.type === 'tool_result')) return false;
+    text = c.filter((b) => b && b.type === 'text' && b.text).map((b) => b.text).join('\n');
+  } else if (typeof c === 'string') {
+    text = c;
+  } else {
+    return false;
+  }
+  // `<bash-input>` and `<command-name>` survive on purpose -- the human typed those.
+  // What this rejects is the OUTPUT echoed back afterwards as another user event.
+  return !SYNTHETIC_TEXT.test(text);
+};
+
 function main() {
   let input;
   try { input = JSON.parse(fs.readFileSync(0, 'utf8')); } catch { process.exit(0); }
@@ -104,7 +149,7 @@ function main() {
     for (const l of lines) {
       if (!l) continue;
       let ev; try { ev = JSON.parse(l); } catch { continue; }
-      if (ev.type === 'user' && ev.message && !ev.isSidechain) userTurns++;
+      if (isUserTurn(ev)) userTurns++;
     }
   } catch { process.exit(0); }
   if (userTurns < MIN_USER_TURNS) process.exit(0);
@@ -142,4 +187,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { buildLinkHints, previousLocalDate };
+module.exports = { buildLinkHints, previousLocalDate, isUserTurn };

@@ -15,7 +15,7 @@ description: Route a durable fact to the correct memory layer, enforce the chara
 | What | Where | Cap |
 |---|---|---|
 | Cross-project environment/workflow gotcha (shell, git, CI, containers…) | Global `~/.claude/context/MEMORY.md` | 4,000 |
-| Project-bound state (active work, this project's quirk, pending decision) | Project `~/.claude/projects/<encoded-anchor>/context/MEMORY.md` | 2,500 |
+| Project-bound state (active work, this project's quirk, pending decision) | Project `~/.claude/projects/<encoded-anchor>/context/MEMORY.md` | 2,500 — **unless** that store has `context/.cap` with another integer; check it before trimming |
 | User profile / preference | `~/.claude/context/USER.md` | 1,375 |
 | One ticket or sub-topic inside a big project | Own file `…/context/topics/<slug>.md` + **one index line** in that project's `MEMORY.md` | — |
 | Reusable domain knowledge tied to a tool or stack | The matching skill's own `knowledge/` or `references/`, if you keep skills that way | — |
@@ -30,7 +30,12 @@ lost to every future project.
 2. Read the target file **in full**.
 3. **Dedup**: scan for a substring match. If the fact is already there, update it
    rather than appending a near-duplicate.
-4. **Cap check**: count *characters*, not bytes — accents inflate byte counts.
+4. **Cap check**: measure the size the file will have **after** the write —
+   `current + len(addition)`, minus whatever a replace removes. Checking the file
+   as it stands lets a store land 200 chars over its cap (table above; check
+   `.cap` first) with nothing noticing until the next `check-caps.sh` run. Split
+   first, then write.
+   Count *characters*, not bytes — accents inflate byte counts.
    Over cap → split (below), do not compress.
 5. Write.
 6. Confirm: "Saved — will be active from next session."
@@ -41,7 +46,7 @@ then swap), **remove** (*always confirm with the user first*).
 ## Topic files — one repo, many tickets
 
 A long-lived repo has one store but many unrelated problem contexts. They do not
-all belong in a 2,500-char `MEMORY.md`: each ticket would starve the others, and
+all belong in a capped `MEMORY.md`: each ticket would starve the others, and
 every session would pay for tickets that closed months ago.
 
 Split instead — `MEMORY.md` becomes an **index**, details live beside it:
