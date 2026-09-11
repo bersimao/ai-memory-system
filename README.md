@@ -338,6 +338,8 @@ release.
 
 ## Status
 
+See [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for what changed recently.
+
 Working daily since 2026-05. Published because the design decisions here —
 capped layers, split-not-compress, a curator that cannot silently delete —
 were each paid for by losing memory the hard way first.
