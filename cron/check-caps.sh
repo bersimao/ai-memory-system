@@ -13,20 +13,26 @@
 # Called from distill.sh; safe to run standalone. Never edits memory files.
 set -uo pipefail
 
-# Optional local config (Obsidian INBOX path, etc). Absent = alerts go to the
-# log only; every INBOX write below is already guarded by [ -f "$INBOX" ].
-[ -f "$HOME/.claude/data/memory.env" ] && . "$HOME/.claude/data/memory.env"
-INBOX="${CLAUDE_MEM_INBOX:-}"
 LOG="$HOME/.memsearch/cron.log"
+# Alerts go to ~/.claude/logs/alerts.log, never to the Obsidian INBOX; the
+# channel and the reason live in alert.sh. /end-of-day reads that log.
+. "$(dirname "${BASH_SOURCE[0]}")/alert.sh"
 
 # chars <file> -> character count (UTF-8 aware), 0 if unreadable
-chars() { python3 -c "import sys;print(len(open(sys.argv[1],encoding='utf-8',errors='replace').read()))" "$1" 2>/dev/null || echo 0; }
+# Prints nothing when the file cannot be read. It used to print 0 on failure,
+# and 0 reads as "well under cap": an unreadable over-cap store closed a real
+# alert and the check exited 0 (Codex, 2026-09-09). Unreadable is a VIOLATION.
+chars() { python3 -c "import sys;print(len(open(sys.argv[1],encoding='utf-8',errors='replace').read()))" "$1" 2>/dev/null; }
 
 over=""
+snap_over=""
 check() {  # check <file> <cap> <label>
   local file="$1" cap="$2" label="$3" n
   [ -f "$file" ] || return 0
   n=$(chars "$file")
+  case "$n" in
+    ''|*[!0-9]*) over="${over}  ${label}: ILEGIVEL (nao deu para medir)"$'\n'; return 0 ;;
+  esac
   [ "$n" -le "$cap" ] && return 0
   over="${over}  ${label}: ${n}/${cap}"$'\n'
 }
@@ -44,20 +50,26 @@ for f in "$HOME"/.claude/projects/*/context/MEMORY.md; do
   check "$f" "$(store_cap "$(dirname "$f")")" "$(basename "$(dirname "$(dirname "$f")")")"
 done
 
-[ -z "$over" ] && exit 0
+# Snapshot bytes are now bounded by the compiler, not estimated here.
+rc=0
 
-echo "[$(date -Iseconds)] cap violations:" >>"$LOG"
-printf '%s' "$over" >>"$LOG"
-
-# Surface where the user actually looks: the Obsidian INBOX (swept daily).
-# Dedup guard — one open alert at a time, no daily spam.
-#
-# The marker must NOT contain "MEMORY-HOOKS ALERT": check-hooks.sh dedups on that
-# substring, so sharing it would let a cap alert suppress the (more severe)
-# hooks-missing alert.
-count=$(printf '%s' "$over" | grep -c .)
-msg="⚠️ MEMORY-CAP ALERT: ${count} file(s) over cap — curate alone will not fix this; consolidate or split into topic pages. Details in ~/.memsearch/cron.log"
-if [ -f "$INBOX" ] && ! grep -qF "MEMORY-CAP ALERT:" "$INBOX"; then
-  printf -- '- [ ] %s\n' "$msg" >>"$INBOX"
+if [ -z "$over" ]; then
+  # A escrita do alerta pode falhar (log sem permissao, disco cheio). Sem checar,
+  # a recuperacao sai 0 e o alerta antigo fica aberto para sempre — ou o alerta
+  # novo some e o check sai 0 como se estivesse tudo bem. Falhou = sai 1.
+  alert_ok "MEMORY-CAP ALERT" "todos os arquivos dentro do cap" || rc=1
+else
+  echo "[$(date -Iseconds)] cap violations:" >>"$LOG"
+  printf '%s' "$over" >>"$LOG"
+  # Self-contained alert: the count AND the offending files, so the log is
+  # readable without cross-referencing cron.log.
+  count=$(printf '%s' "$over" | grep -c .)
+  alert "MEMORY-CAP ALERT" "${count} file(s) over cap - curate alone will not fix this; preserve complete originals in topic pages.
+$(printf '%s' "$over")"
+  rc=1
 fi
-exit 1
+
+# Close only the obsolete estimator alert; the compiler enforces its own budget.
+alert_ok "MEMORY-SNAPSHOT ALERT" "snapshot compiler now enforces a byte bound" || rc=1
+
+exit $rc

@@ -18,6 +18,15 @@ DST="$(cd "$(dirname "$0")" && pwd)"
 
 # The release surface. Anything not listed here does not ship.
 MANIFEST=(
+  hooks/memory-lifecycle.py
+  scripts/memory_core.py
+  scripts/memory_core.test.py
+  scripts/memory-cli.py
+  scripts/memory-maintain.py
+  scripts/memory-search.py
+  scripts/memory-doctor.py
+  scripts/memory-import-codex.py
+  scripts/memory-index.py
   hooks/memory-inject.js
   hooks/transcript-capture.js
   hooks/capture-maintenance.js
@@ -36,6 +45,7 @@ MANIFEST=(
   cron/jsonl-to-transcript.py
   cron/jsonl-to-transcript.test.py
   cron/memsearch-index.sh
+  cron/alert.sh
   cron/check-caps.sh
   cron/check-caps.test.sh
   cron/store-cap.sh
@@ -50,7 +60,7 @@ MANIFEST=(
 )
 
 # Repo-native files (they do not come from ~/.claude) the guard also scans.
-EXTRA_SCAN=(docs/memory-instructions.md docs/codex-support.md
+EXTRA_SCAN=(install-memory.py configure-memory.py install-memory.test.py docs/memory-instructions.md docs/codex-support.md
             skills/memory-write/SKILL.md docs/assets/banner.svg)
 
 mode="${1:---check}"

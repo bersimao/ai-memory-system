@@ -21,13 +21,14 @@ is revertible; run it on a clean tree.
 """
 import json, os, glob, sys, datetime, collections, subprocess
 
-ROOT = os.path.expanduser("~/.claude/projects")
+MEMORY_ROOT = os.environ.get("AI_MEMORY_HOME", os.path.expanduser("~/.claude"))
+ROOT = os.path.join(MEMORY_ROOT, "projects")
 # Codex writes rollouts to ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl, and
 # the cwd lives in session_meta rather than in the directory name. Same
 # project, same memory: both agents write to the SAME day transcript, ordered
 # by timestamp. Absent = nothing happens; nobody needs Codex installed.
 CODEX_SESSIONS = os.path.expanduser("~/.codex/sessions")
-STORE_RESOLVER = os.path.expanduser("~/.claude/hooks/project-store.js")
+STORE_RESOLVER = os.path.join(MEMORY_ROOT, "hooks", "project-store.js")
 TODAY = datetime.date.today().isoformat()
 # ponytail: flat per-day cap. A day that overflows loses its tail rather than
 # bloating the L3 index; raise if truncation markers start showing up often.

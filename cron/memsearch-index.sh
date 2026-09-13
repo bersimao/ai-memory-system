@@ -7,6 +7,10 @@
 # collection buries the authoritative answer. Measured 2026-07-29: 13/15 top
 # hits were transcripts and skills/ was not indexed at all.
 set -uo pipefail
+# Share the same lock as semantic retrieval and accepted-write indexing.
+mkdir -p "$HOME/.claude/data/memory-system"
+exec 9>"$HOME/.claude/data/memory-system/index.lock"
+flock -w 300 9 || exit 1
 shopt -s nullglob  # a project with no context/ must expand to nothing, not a literal glob
 
 LOG="$HOME/.memsearch/cron.log"
@@ -35,7 +39,8 @@ ts() { date -Iseconds; }
     "$HOME/.claude/context" \
     "$HOME"/.claude/projects/*/context/*.md \
     "$HOME"/.claude/projects/*/context/topics \
-    "$HOME"/.claude/projects/*/context/memory
+    "$HOME"/.claude/projects/*/context/memory \
+    "$HOME"/.claude/projects/*/context/checkpoints
 
   echo "--- L3: transcripts -> memsearch_transcripts"
   /usr/bin/python3 -m memsearch index -c memsearch_transcripts \
