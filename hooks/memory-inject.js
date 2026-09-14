@@ -26,6 +26,17 @@ const read = (p) => {
   try { return fs.readFileSync(p, 'utf8').trim(); } catch { return ''; }
 };
 
+// Status lives only in the note's frontmatter (registry carries no status/active
+// field — see demands.json _doc). Mirrors scripts/proj_picker.py's status_of().
+const noteStatus = (notePath) => {
+  const text = read(notePath);
+  if (!text.startsWith('---')) return '';
+  const end = text.indexOf('\n---', 3);
+  const fm = end === -1 ? text.slice(3) : text.slice(3, end);
+  const m = fm.match(/^status:\s*(.+)$/m);
+  return m ? m[1].trim().replace(/^['"]|['"]$/g, '') : '';
+};
+
 // Local date YYYY-MM-DD (avoid UTC drift near midnight)
 const localDate = (d) => {
   const z = (n) => String(n).padStart(2, '0');
@@ -135,7 +146,8 @@ const anchorSection = () => {
 // repo appends here instead of starting a private memory. Source of truth is
 // ~/.claude/data/demands.json (owned by the start-new-project skill).
 const demandsSection = () => demandsFor(anchor.dir).map((d) => {
-  const lines = [`- **${d.name}** [${d.client}] — ${d.status || 'sem status'}`];
+  const status = d.note ? noteStatus(d.note) : '';
+  const lines = [`- **${d.name}** [${d.client}] — ${status || 'sem status'}`];
   if (d.note) lines.push(`  note: ${d.note}`);
   if (d.workdir && d.workdir !== anchor.dir) lines.push(`  workdir: ${d.workdir}`);
   return lines.join('\n');

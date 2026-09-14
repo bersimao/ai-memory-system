@@ -78,7 +78,7 @@ const storeDir = (cwd, transcriptPath) => {
 const demandsFor = (anchor) => {
   const reg = readJson(DEMANDS);
   return ((reg && reg.demands) || []).filter(
-    (d) => d.workdir && d.active !== false && (isUnder(d.workdir, anchor) || isUnder(anchor, d.workdir))
+    (d) => d.workdir && (isUnder(d.workdir, anchor) || isUnder(anchor, d.workdir))
   );
 };
 
