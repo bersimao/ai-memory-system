@@ -16,6 +16,10 @@ settings sources, no session persistence, and an empty strict MCP configuration.
 The model returns JSON candidates with source quotes; it cannot edit live memory
 through those tools. Exact quotes prove traceability, not that a paraphrase is true.
 Corrections and semantic merging remain reviewed operations.
+The default extractor also passes `--json-schema`, so the reply arrives parsed in
+`structured_output`. Any extractor's reply is still accepted inside a markdown code
+fence, which models add unprompted, and a JSON object returned inside the `summary`
+string is rendered to Markdown instead of being stored as a blob.
 
 To use another extractor, set private `data/memory-system/config.json`:
 

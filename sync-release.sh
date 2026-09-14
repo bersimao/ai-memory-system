@@ -41,6 +41,7 @@ MANIFEST=(
   cron/split-memory.py
   cron/split-memory.test.py
   cron/distill.sh
+  cron/distill.test.sh
   cron/backfill-daily-logs.sh
   cron/jsonl-to-transcript.py
   cron/jsonl-to-transcript.test.py

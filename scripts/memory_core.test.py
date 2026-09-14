@@ -246,6 +246,40 @@ class Tests(unittest.TestCase):
         self.assertIn('--strict-mcp-config', argv)
         self.assertNotIn('--dangerously-skip-permissions', argv)
 
+    def test_fenced_model_result_is_parsed(self):
+        # Real haiku output (2026-09-14): the JSON arrives inside a markdown fence.
+        # The stub above never showed that shape, so the parser shipped broken.
+        fenced = json.dumps({'result': '```json\n{"summary": "s"}\n```'})
+        with patch.object(maintain.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, fenced, '')):
+            self.assertEqual(maintain.generate(self.memory, 'evidence', 'instruction'), {'summary': 's'})
+
+    def test_structured_output_wins_over_result_text(self):
+        wrapped = json.dumps({'result': 'not json at all', 'structured_output': {'facts': []}})
+        with patch.object(maintain.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, wrapped, '')):
+            self.assertEqual(maintain.generate(self.memory, 'evidence', 'instruction', schema={'type': 'object'}), {'facts': []})
+
+    def test_schema_flag_only_for_default_extractor(self):
+        ok = subprocess.CompletedProcess([], 0, '{"summary": "s"}', '')
+        with patch.object(maintain.subprocess, 'run', return_value=ok) as run:
+            maintain.generate(self.memory, 'evidence', 'instruction', schema={'type': 'object'})
+        self.assertIn('--json-schema', run.call_args.args[0])
+        self.memory.config['extract_command'] = ['my-extractor', '--json']
+        with patch.object(maintain.subprocess, 'run', return_value=ok) as run:
+            maintain.generate(self.memory, 'evidence', 'instruction', schema={'type': 'object'})
+        self.assertEqual(run.call_args.args[0], ['my-extractor', '--json'])
+
+    def test_json_shaped_summary_is_rendered_as_markdown(self):
+        # Real haiku output (2026-09-14): asked for a summary string, it returned its
+        # own JSON object serialized inside that string. The daily log became a blob.
+        blob = json.dumps({'goal': 'G', 'deliverables': ['A', 'B'],
+                           'decisions': [{'decision': 'D', 'reason': 'R'}], 'open_threads': ['O']})
+        text = maintain.summary_markdown(blob)
+        self.assertFalse(text.lstrip().startswith('{'))
+        for expected in ('**Goal**: G', '- A', '- D — R', '**Open threads**:', '- O'):
+            self.assertIn(expected, text)
+        prose = '**Goal**: already markdown.'
+        self.assertEqual(maintain.summary_markdown(prose), prose)
+
 
 class IntegrationTests(unittest.TestCase):
     setUp = Tests.setUp
