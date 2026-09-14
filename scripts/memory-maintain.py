@@ -124,6 +124,8 @@ def maintain(memory, mode, limit=20):
                 continue
             if (dt.datetime.now().timestamp() - path.stat().st_mtime) > 35 * 86400:
                 continue
+            if mode == 'backfill' and read(memory.path(str(ctx.relative_to(memory.root) / 'memory' / path.name))):
+                continue  # already logged: skip before reading, so its size is never reported
             source = read(path)
             if not source or len(source) > 180000:
                 if source:

@@ -280,6 +280,20 @@ class Tests(unittest.TestCase):
         prose = '**Goal**: already markdown.'
         self.assertEqual(maintain.summary_markdown(prose), prose)
 
+    def test_backfill_skips_logged_day_before_size_check(self):
+        # A day that already has a daily log must not be read or size-checked;
+        # otherwise every logged-but-oversized transcript printed
+        # "split/review required" every night, for nothing (2026-09-14).
+        import contextlib, io
+        name = '2026-01-01.md'
+        atomic(self.root / self.ctx / 'transcripts' / name, 'x' * 180001)
+        atomic(self.root / self.ctx / 'memory' / name, 'already logged\n')
+        err = io.StringIO()
+        with patch.object(maintain.subprocess, 'run') as run, contextlib.redirect_stderr(err):
+            maintain.maintain(self.memory, 'backfill')
+        self.assertNotIn('oversized', err.getvalue())
+        run.assert_not_called()
+
 
 class IntegrationTests(unittest.TestCase):
     setUp = Tests.setUp
