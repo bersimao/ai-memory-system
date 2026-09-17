@@ -419,16 +419,23 @@ class Memory:
         rel = ctx + '/topics/learned-' + dt.date.today().strftime('%Y-%m') + '.md'
         old = read(self.path(rel)) or ''
         additions = ''
+        rejected = 0
         for fact in facts:
+            # A fact without a verbatim quote is dropped, never written. Raising here
+            # aborted the whole nightly run on one paraphrased quote (2026-09-16).
+            if not isinstance(fact, dict) or not isinstance(fact.get('text'), str) or not isinstance(fact.get('quote'), str):
+                rejected += 1
+                continue
             text, quote = fact['text'].strip(), fact['quote'].strip()
             if not text or not quote or quote not in source or len(text) > 4000:
-                raise ValueError('fact requires an exact source quote and bounded text')
+                rejected += 1
+                continue
             marker = '<!-- fact:' + digest(text) + ' -->'
             if marker in old + additions:
                 continue
             additions += '\n' + marker + '\n- [candidate] ' + text + '\n  Source: ' + source_relative + '\n  Evidence: ' + quote.replace('\n', ' ') + '\n'
         if not additions:
-            return {'changed': []}
+            return {'changed': [], 'rejected': rejected}
         changes = [self.change(rel, old + additions, 'append', 'distill with source evidence',
                                [{'path': source_relative, 'sha256': source_hash}])]
         index = ctx + '/MEMORY.md'
@@ -451,7 +458,7 @@ class Memory:
                 if len(updated) > cap:
                     raise ValueError('cap too small for index pointer')
                 changes.append(self.change(index, updated, 'append', 'index extracted candidates'))
-        return self.apply({'version': VERSION, 'changes': changes})
+        return dict(self.apply({'version': VERSION, 'changes': changes}), rejected=rejected)
 
 
 def main():

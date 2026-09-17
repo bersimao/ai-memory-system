@@ -141,8 +141,14 @@ class Tests(unittest.TestCase):
     def test_facts_need_matching_evidence_and_dedup(self):
         source = self.ctx + '/memory/2026-09-12.md'
         atomic(self.memory.path(source), 'The retry bug was fixed using an idempotency key.')
-        with self.assertRaisesRegex(ValueError, 'exact source quote'):
-            self.memory.facts(source, [{'text': 'Guess', 'quote': 'not in source'}])
+        # One unquoted fact must not sink the batch (haiku paraphrased in 4 of 8
+        # sources, 2026-09-16, and the nightly run aborted on the same file forever).
+        mixed = self.memory.facts(source, [{'text': 'Guess', 'quote': 'not in source'}, 'not a fact',
+                                           {'text': 'Retries use a key.', 'quote': 'The retry bug was fixed'}])
+        self.assertEqual(mixed['rejected'], 2)
+        learned = read(self.memory.path(next(p for p in mixed['changed'] if '/learned-' in p)))
+        self.assertIn('Retries use a key.', learned)
+        self.assertNotIn('Guess', learned)
         facts = [{'text': 'Use an idempotency key for retries.', 'quote': 'fixed using an idempotency key'}]
         first = self.memory.facts(source, facts)
         self.assertTrue(first['changed'])
