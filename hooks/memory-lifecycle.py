@@ -73,9 +73,25 @@ def capture(memory, event):
     json_write(cursor_file, {'offset': offset, 'prefix_hash': prefix_hash, 'updated_at': now()})
 
 
+def spawned_by_claude_code(event):
+    # The Claude Code codex plugin runs headless Codex review sessions in the
+    # project cwd (424 of 431 rollouts, week to 2026-09-17). They must neither get
+    # the snapshot nor file review verdicts as project checkpoints.
+    path = event.get('transcript_path')
+    try:
+        with open(path, 'rb') as stream:
+            first = json.loads(stream.readline())
+    except (TypeError, OSError, ValueError):
+        return False
+    return (isinstance(first, dict) and first.get('type') == 'session_meta'
+            and (first.get('payload') or {}).get('originator') == 'Claude Code')
+
+
 def handle(memory, event):
     kind = event.get('hook_event_name')
     cwd = event.get('cwd', os.getcwd())
+    if spawned_by_claude_code(event):
+        return ''
     if kind == 'SessionStart':
         result = memory.snapshot(cwd, int(memory.config.get('snapshot_bytes', 8000)))
         session = digest(event.get('session_id', 'unknown'))[:24]

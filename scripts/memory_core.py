@@ -86,6 +86,34 @@ def tokens(text):
     return [w for w in words if len(w) > 1 and w not in STOP_WORDS]
 
 
+def _quote_form(text):
+    # Formatting only: markdown marks, dash/arrow/quote glyphs, whitespace, case.
+    # Words, digits and identifiers must still match character for character.
+    text = unicodedata.normalize('NFC', text)
+    text = re.sub(r'[*`]+', '', text)
+    for glyph, plain in (('→', '->'), ('—', '-'), ('–', '-'), ('“', '"'), ('”', '"'), ('’', "'")):
+        text = text.replace(glyph, plain)
+    return re.sub(r'\s+', ' ', text).strip().casefold()
+
+
+def quote_supported(quote, source):
+    # Measured 2026-09-17: exact matching rejected 12/13 faithful haiku quotes from a
+    # markdown log, so only markdown-free summaries ever produced facts. An elided
+    # quote ("A... B") must have every segment in the source, in order.
+    haystack = _quote_form(source)
+    segments = [_quote_form(s) for s in re.split(r'\.\.\.|…', quote)]
+    segments = [s for s in segments if s]
+    if not segments or any(len(s) < 12 for s in segments):
+        return False
+    position = 0
+    for segment in segments:
+        found = haystack.find(segment, position)
+        if found < 0:
+            return False
+        position = found + len(segment)
+    return True
+
+
 def bounded(text, budget):
     return text.encode('utf-8')[:max(0, budget)].decode('utf-8', errors='ignore')
 
@@ -427,7 +455,7 @@ class Memory:
                 rejected += 1
                 continue
             text, quote = fact['text'].strip(), fact['quote'].strip()
-            if not text or not quote or quote not in source or len(text) > 4000:
+            if not text or not quote_supported(quote, source) or len(text) > 4000:
                 rejected += 1
                 continue
             marker = '<!-- fact:' + digest(text) + ' -->'

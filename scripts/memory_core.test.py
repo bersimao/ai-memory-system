@@ -238,6 +238,24 @@ class Tests(unittest.TestCase):
         hooks.handle(self.memory, event)
         self.assertEqual(len(list((self.root / self.ctx / 'checkpoints').glob('*.md'))), 1)
 
+    def test_codex_sessions_spawned_by_claude_code_get_no_memory(self):
+        # 2026-09-17: once Codex trusted the hooks, the Claude Code codex plugin's
+        # headless review sessions (424 of 431 rollouts in a week) received the
+        # snapshot and would have filed review verdicts as project checkpoints.
+        path = Path(self.tmp.name) / 'rollout.jsonl'
+        meta = {'type': 'session_meta', 'payload': {'id': 'r', 'originator': 'Claude Code', 'source': 'vscode', 'cwd': str(self.cwd)}}
+        reply = {'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': 'Review verdict'}}
+        path.write_text(json.dumps(meta) + '\n' + json.dumps(reply) + '\n')
+        base = {'cwd': str(self.cwd), 'session_id': 'r', 'transcript_path': str(path)}
+        for kind in ('SessionStart', 'UserPromptSubmit', 'Stop'):
+            self.assertEqual(hooks.handle(self.memory, {**base, 'hook_event_name': kind, 'prompt': 'review the retry decision'}), '')
+        self.assertEqual(list((self.root / self.ctx / 'checkpoints').glob('*.md')), [])
+        meta['payload']['originator'] = 'codex-tui'
+        path.write_text(json.dumps(meta) + '\n' + json.dumps(reply) + '\n')
+        self.assertIn('Memory snapshot', hooks.handle(self.memory, {**base, 'hook_event_name': 'SessionStart'}))
+        hooks.handle(self.memory, {**base, 'hook_event_name': 'Stop'})
+        self.assertEqual(len(list((self.root / self.ctx / 'checkpoints').glob('*.md'))), 1)
+
     def test_index_failure_retains_dirty_receipt(self):
         self.apply(self.memory.change(self.rel, read(self.memory.path(self.rel)) + 'new'))
         with patch.object(maintain.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'offline')):
@@ -299,6 +317,78 @@ class Tests(unittest.TestCase):
             maintain.maintain(self.memory, 'backfill')
         self.assertNotIn('oversized', err.getvalue())
         run.assert_not_called()
+
+    def test_real_haiku_quotes_survive_markdown_and_elision(self):
+        # Measured 2026-09-17 on real logs: haiku quoted faithfully but dropped
+        # `code`/**bold** marks, rendered → as ->, and joined two passages with
+        # "...". Exact matching kept 0/13 facts from a GENNERA log and 1/12 from
+        # claude-mem, so only markdown-free haiku summaries ever yielded facts.
+        source = self.ctx + '/memory/2026-09-08.md'
+        atomic(self.memory.path(source),
+               '- Detecção de drift **REJEITADA** pelo usuário: clientes podem ter regras em `SqlText`.\n'
+               '- Mecanismo: `MetadataCore.ExistsQuery:246` compara só SqlCode — query nunca atualizada.\n'
+               '- Corpo não-OData → FlurlHttpException; nada tratava o null.\n')
+        facts = [
+            {'text': 'Drift rejected.', 'quote': 'Detecção de drift REJEITADA pelo usuário: clientes podem ter regras em SqlText'},
+            {'text': 'Exists only by code.', 'quote': 'MetadataCore.ExistsQuery:246 compara só SqlCode - query nunca atualizada'},
+            {'text': 'Non-OData body.', 'quote': 'Corpo não-OData -> FlurlHttpException... nada tratava o null'},
+            {'text': 'Invented.', 'quote': 'clientes nunca têm regras customizadas no SqlText'},
+            {'text': 'Out of order.', 'quote': 'nada tratava o null... Corpo não-OData'},
+            {'text': 'Too short.', 'quote': 'só'},
+        ]
+        result = self.memory.facts(source, facts)
+        self.assertEqual(result['rejected'], 3)
+        learned = read(self.memory.path(next(p for p in result['changed'] if '/learned-' in p)))
+        for kept in ('Drift rejected.', 'Exists only by code.', 'Non-OData body.'):
+            self.assertIn(kept, learned)
+        for dropped in ('Invented.', 'Out of order.', 'Too short.'):
+            self.assertNotIn(dropped, learned)
+
+    def test_distill_is_newest_first_and_one_bad_source_does_not_stop_the_batch(self):
+        # Alphabetical store order spent every run on the home store (41/41
+        # transactions); an exception in one source ended the run for all stores.
+        import contextlib, io, time as _time
+        paths = []
+        for i, name in enumerate(('2026-01-01.md', '2026-01-02.md', '2026-01-03.md')):
+            p = self.root / self.ctx / 'memory' / name
+            atomic(p, 'Decision ' + name + ' because it is measured and durable.\n')
+            stamp = _time.time() - 86400 * (3 - i)
+            os.utime(p, (stamp, stamp))
+            paths.append(p)
+        calls = []
+
+        def fake(memory, source, instruction, schema=None):
+            calls.append(source)
+            if '2026-01-02' in source:
+                raise ValueError('malformed reply')
+            return {'facts': []}
+        err = io.StringIO()
+        with patch.object(maintain, 'generate', side_effect=fake), contextlib.redirect_stderr(err):
+            failures = maintain.maintain(self.memory, 'distill')
+        self.assertEqual([c.split()[1] for c in calls], ['2026-01-03.md', '2026-01-02.md', '2026-01-01.md'])
+        self.assertEqual(len(failures), 1)
+        self.assertIn('2026-01-02.md', err.getvalue())
+        receipts = list((self.memory.state / 'extracted').glob('*.json'))
+        self.assertEqual(len(receipts), 2)  # the failed source stays eligible for retry
+
+    def test_distill_skips_sources_still_changing_today(self):
+        p = self.root / self.ctx / 'checkpoints' / 'session-today.md'
+        atomic(p, 'Decision taken today because the session is still open.\n')
+        with patch.object(maintain, 'generate') as gen:
+            maintain.maintain(self.memory, 'distill')
+        gen.assert_not_called()
+
+    def test_quota_exhaustion_aborts_the_batch(self):
+        for name in ('2026-01-01.md', '2026-01-02.md'):
+            p = self.root / self.ctx / 'memory' / name
+            atomic(p, 'Durable decision because reasons.\n')
+            stamp = __import__('time').time() - 86400
+            os.utime(p, (stamp, stamp))
+        err = RuntimeError('extractor failed; no memory changed (exit 1): 5-hour limit reached ∙ resets 3pm')
+        with patch.object(maintain, 'generate', side_effect=err) as gen:
+            with self.assertRaisesRegex(RuntimeError, 'resets'):
+                maintain.maintain(self.memory, 'distill')
+        self.assertEqual(gen.call_count, 1)
 
 
 class IntegrationTests(unittest.TestCase):

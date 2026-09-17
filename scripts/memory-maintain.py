@@ -3,6 +3,7 @@
 import argparse
 import datetime as dt
 import json
+import re
 from pathlib import Path
 import os
 import subprocess
@@ -86,7 +87,10 @@ def generate(memory, source, instruction, schema=None):
         result = subprocess.run(command, input=instruction + '\n<evidence>\n' + redact(source) + '\n</evidence>',
                                 cwd=directory, text=True, capture_output=True, timeout=180)
     if result.returncode:
-        raise RuntimeError('extractor failed; no memory changed (exit ' + str(result.returncode) + ')')
+        # The tail says WHY (quota vs one bad call); maintain() needs it to decide
+        # whether the rest of the batch can still run.
+        detail = ' '.join((result.stderr + ' ' + result.stdout).split())[-300:]
+        raise RuntimeError('extractor failed; no memory changed (exit ' + str(result.returncode) + '): ' + detail)
     obj = parse_json(result.stdout)
     if isinstance(obj, dict) and ('result' in obj or 'structured_output' in obj):
         if obj.get('is_error'):
@@ -102,46 +106,78 @@ def split(memory, relative):
     return memory.split(relative)
 
 
-def maintain(memory, mode, limit=20):
-    processed = 0
+SUMMARY_PROMPT = ('Return {"summary":"..."}. The summary value is Markdown text, not JSON: **Goal**, **Deliverables**, '
+                  '**Decisions** with the reason for each, and **Open threads**, using bullet lists where useful. '
+                  'Max 6000 characters. Do not invent facts.')
+
+# 2026-09-17: the old prompt ("durable fact or decision") produced activity reports
+# ("a daily log was created", "the session focused on") and translated pt-BR
+# evidence into English, which lexical recall in pt-BR then misses.
+FACTS_PROMPT = ('Return {"facts":[{"text":"...","quote":"..."}]}. Extract only knowledge a future session needs to act '
+                'correctly: a decision WITH its reason, a rejected alternative and why, a root cause and its fix, a '
+                'configuration value, an environment fact, or a house rule. Write each text as one standalone sentence '
+                'that names the project or component and states the reason. Keep identifiers exactly as written. Write '
+                'in the same language as the evidence. Never describe activity (what a session did, files created, work '
+                'in progress, items marked unclear). quote: copy one passage from the evidence word for word (markdown '
+                'symbols may be dropped). Return an empty list when nothing qualifies. At most 12 facts. These are '
+                'candidates, not verified truth.')
+
+# Account-wide limits: every following call fails the same way (see scripts/llm-run).
+QUOTA = re.compile(r'cc_cli_limit_message|spend limit|usage limit|limit.{0,80}(resets|will reset|reset at)', re.I | re.S)
+
+
+def maintain(memory, mode, limit=40):
     if mode == 'curate':
         for path in sorted((memory.root / 'projects').glob('*/context/MEMORY.md')):
             result = split(memory, str(path.relative_to(memory.root)))
             if result['changed']:
                 print(json.dumps(result))
         print('Curation preserves full originals. Semantic edits require reviewed proposals.')
-        return
-    today = dt.date.today().isoformat()
-    for ctx in sorted((memory.root / 'projects').glob('*/context')):
+        return []
+    today = dt.date.today()
+    horizon = dt.datetime.now().timestamp() - 35 * 86400
+    candidates = []
+    for ctx in (memory.root / 'projects').glob('*/context'):
         if mode == 'backfill':
-            sources = sorted((ctx / 'transcripts').glob('*.md'))
+            sources = (ctx / 'transcripts').glob('*.md')
         else:
-            sources = sorted((ctx / 'memory').glob('*.md')) + sorted((ctx / 'checkpoints').glob('*.md'))
+            sources = [*(ctx / 'memory').glob('*.md'), *(ctx / 'checkpoints').glob('*.md')]
         for path in sources:
-            if processed >= limit:
-                return
-            if mode == 'backfill' and path.stem >= today:
+            mtime = path.stat().st_mtime
+            if mtime < horizon:
                 continue
-            if (dt.datetime.now().timestamp() - path.stat().st_mtime) > 35 * 86400:
+            if mode == 'backfill' and path.stem >= today.isoformat():
+                continue
+            # A source edited today may still grow; extracting it twice duplicates
+            # facts under different wording (fact markers hash the text).
+            if mode == 'distill' and dt.date.fromtimestamp(mtime) >= today:
                 continue
             if mode == 'backfill' and read(memory.path(str(ctx.relative_to(memory.root) / 'memory' / path.name))):
                 continue  # already logged: skip before reading, so its size is never reported
-            source = read(path)
-            if not source or len(source) > 180000:
-                if source:
-                    print('Skipped oversized source; split/review required: ' + str(path), file=sys.stderr)
-                continue
-            key = digest(mode + str(path))
-            receipt = memory.state / 'extracted' / (key + '.json')
-            if json_read(receipt, {}).get('sha256') == digest(source):
-                continue
-            relative = str(path.relative_to(memory.root))
+            candidates.append((mtime, ctx, path))
+    # Newest first across ALL stores. Alphabetical store order spent all 41 distill
+    # transactions up to 2026-09-17 on one store and never reached the others.
+    candidates.sort(key=lambda item: (-item[0], str(item[2])))
+    processed, failures = 0, []
+    for _, ctx, path in candidates:
+        if processed >= limit:
+            break
+        source = read(path)
+        if not source or len(source) > 180000:
+            if source:
+                print('Skipped oversized source; split/review required: ' + str(path), file=sys.stderr)
+            continue
+        receipt = memory.state / 'extracted' / (digest(mode + str(path)) + '.json')
+        if json_read(receipt, {}).get('sha256') == digest(source):
+            continue
+        relative = str(path.relative_to(memory.root))
+        try:
             if mode == 'backfill':
                 target = str(ctx.relative_to(memory.root) / 'memory' / path.name)
                 # Existing daily logs are never rewritten by background models.
                 if read(memory.path(target)):
                     continue
-                obj = generate(memory, source, 'Return {"summary":"..."}. The summary value is Markdown text, not JSON: **Goal**, **Deliverables**, **Decisions** with the reason for each, and **Open threads**, using bullet lists where useful. Max 6000 characters. Do not invent facts.', schema=SUMMARY_SCHEMA)
+                obj = generate(memory, source, SUMMARY_PROMPT, schema=SUMMARY_SCHEMA)
                 text = summary_markdown(obj['summary']) if isinstance(obj.get('summary'), str) else obj.get('summary')
                 if not isinstance(text, str) or not text.strip() or len(text) > 6000:
                     raise ValueError('invalid summary')
@@ -151,16 +187,25 @@ def maintain(memory, mode, limit=20):
                     '<!-- candidate summary; source: ' + relative + '; revision: ' + digest(source) + ' -->\n' + redact(text) + '\n',
                     'create', 'backfill previously missing daily log')]})
             else:
-                obj = generate(memory, source, 'Return {"facts":[{"text":"durable fact or decision with its rationale","quote":"exact supporting substring from evidence"}]}. Return an empty list if nothing durable. At most 12 facts. These will be candidates, not verified truth.', schema=FACTS_SCHEMA)
-                facts = obj['facts']
+                obj = generate(memory, source, FACTS_PROMPT, schema=FACTS_SCHEMA)
+                facts = obj.get('facts')
                 if not isinstance(facts, list) or len(facts) > 12:
                     raise ValueError('invalid facts')
                 if read(path) != source:
                     raise ValueError('source changed during extraction')
                 result = memory.facts(relative, facts)
-            json_write(receipt, {'sha256': digest(source), 'at': now()})
-            processed += 1
-            print(json.dumps(result))
+        except Exception as exc:
+            if QUOTA.search(str(exc)):
+                raise
+            # One bad source must not cost every other store its run. No receipt:
+            # the source stays eligible and is retried next time.
+            print('failed ' + relative + ': ' + str(exc), file=sys.stderr)
+            failures.append(relative)
+            continue
+        json_write(receipt, {'sha256': digest(source), 'at': now()})
+        processed += 1
+        print(json.dumps(result))
+    return failures
 
 
 def reindex(memory):
@@ -192,13 +237,17 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=['distill', 'backfill', 'curate', 'index'])
     parser.add_argument('--root')
-    parser.add_argument('--limit', type=int, default=20)
+    parser.add_argument('--limit', type=int, default=40)
     args = parser.parse_args()
     memory = Memory(args.root)
     try:
         if args.mode == 'index':
             sys.exit(reindex(memory))
-        maintain(memory, args.mode, args.limit)
+        failures = maintain(memory, args.mode, args.limit)
+        if failures:
+            # Every other source was processed; still fail so distill.sh alerts.
+            print('memory maintenance finished with ' + str(len(failures)) + ' failed source(s)', file=sys.stderr)
+            sys.exit(1)
     except Exception as exc:
         print('memory maintenance stopped: ' + str(exc), file=sys.stderr)
         sys.exit(1)
