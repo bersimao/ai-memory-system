@@ -6,7 +6,7 @@ and semantic retrieval do not own facts. Hook adapters only deliver events and c
 There is no MCP dependency.
 
 Lexical recall runs locally. Optional semantic recall isolates memsearch API coupling
-in `scripts/memory-search.py`; the adapter was checked against memsearch 0.4.4. It
+in `scripts/memory-search.py`; the adapter was checked against memsearch 0.4.20. It
 filters allowed sources before retrieval, verifies that boundary before reranking,
 and rejects stale indexed text. Embedding/reranker configuration remains in memsearch's
 private configuration. Provider behavior and languages still affect semantic relevance.

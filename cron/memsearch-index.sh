@@ -58,8 +58,18 @@ from memsearch.store import _escape_filter_value
 c = MilvusClient(uri=os.path.expanduser("~/.memsearch/milvus.db"))
 for coll in ("memsearch_chunks", "memsearch_transcripts"):
     c.load_collection(coll)
-    srcs = {r["source"] for r in c.query(coll, filter='chunk_hash != ""',
-                                        output_fields=["source"], limit=16000)}
+    # Iterate instead of one query with a fixed limit: limit=16000 hid 80 of 377
+    # transcript sources (25,042 rows) from this prune — 2026-09-19. The count
+    # check below makes a short scan loud instead of silent.
+    total = c.query(coll, filter='chunk_hash != ""', output_fields=["count(*)"])[0]["count(*)"]
+    it = c.query_iterator(coll, batch_size=1000, filter='chunk_hash != ""', output_fields=["source"])
+    seen, srcs = 0, set()
+    while batch := it.next():
+        seen += len(batch)
+        srcs.update(r["source"] for r in batch)
+    it.close()
+    if seen != total:
+        print(f"{coll}: WARNING scanned {seen} of {total} rows; prune may be incomplete")
     dead = [s for s in srcs if not os.path.exists(s)]
     for s in dead:
         c.delete(coll, filter=f'source == "{_escape_filter_value(s)}"')
