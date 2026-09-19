@@ -26,6 +26,17 @@ const read = (p) => {
   try { return fs.readFileSync(p, 'utf8').trim(); } catch { return ''; }
 };
 
+// Status lives only in the note's frontmatter (registry carries no status/active
+// field — see demands.json _doc). Mirrors scripts/proj_picker.py's status_of().
+const noteStatus = (notePath) => {
+  const text = read(notePath);
+  if (!text.startsWith('---')) return '';
+  const end = text.indexOf('\n---', 3);
+  const fm = end === -1 ? text.slice(3) : text.slice(3, end);
+  const m = fm.match(/^status:\s*(.+)$/m);
+  return m ? m[1].trim().replace(/^['"]|['"]$/g, '') : '';
+};
+
 // Local date YYYY-MM-DD (avoid UTC drift near midnight)
 const localDate = (d) => {
   const z = (n) => String(n).padStart(2, '0');
@@ -135,7 +146,8 @@ const anchorSection = () => {
 // repo appends here instead of starting a private memory. Source of truth is
 // ~/.claude/data/demands.json (owned by the start-new-project skill).
 const demandsSection = () => demandsFor(anchor.dir).map((d) => {
-  const lines = [`- **${d.name}** [${d.client}] — ${d.status || 'sem status'}`];
+  const status = d.note ? noteStatus(d.note) : '';
+  const lines = [`- **${d.name}** [${d.client}] — ${status || 'sem status'}`];
   if (d.note) lines.push(`  note: ${d.note}`);
   if (d.workdir && d.workdir !== anchor.dir) lines.push(`  workdir: ${d.workdir}`);
   return lines.join('\n');
@@ -193,8 +205,8 @@ const SNAP_BUDGET = 10000;
 // the false positives without losing any real shape. Also added SENHA/
 // SEGREDO (PT-BR password/secret) since these transcripts are mostly PT-BR
 // and the keyword list was English-only; deliberately did NOT add CHAVE
-// ("key") — in this user's actual domain (SAP B1 / SQL) "chave primária" /
-// "chave estrangeira" is constant, non-secret vocabulary, so that word would
+// ("key") — in database-heavy PT-BR text "chave primária" / "chave
+// estrangeira" is constant, non-secret vocabulary, so that word would
 // reintroduce the exact corruption class this fix removes.
 const redactSecrets = (text) => text
   .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[REDACTED-key]')
@@ -221,7 +233,13 @@ const redactSecrets = (text) => text
   // function exists to prevent. So: no placeholder exception. A documentation
   // example gets redacted along with everything else — accepted, not a bug.
   .replace(/(:\/\/[^/\s:@]+):[^/\s]+@/g, '$1:[REDACTED]@')
-  .replace(/((?:TOKEN|SECRET|PASSWORD|SENHA|SEGREDO|API_KEY|APIKEY)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)\S+/gi, '$1[REDACTED]');
+  .replace(/(Authorization\s*:\s*Basic\s+)\S+/gi, '$1[REDACTED]')
+  // Same short-keyword rules as memory_core.redact: non-letter on the left,
+  // PASS/CREDENTIALS uppercase-only (prose "first pass:"), PWD/PASSWD any case.
+  // Quoted keys ("DB_PASS": ...) and quoted values with spaces are consumed whole.
+  .replace(/(?<![A-Za-z])((?:PASSWD|PWD)(?:[_-][A-Za-z0-9]+)*["']?\s*[=:]\s*)(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|[^\s;]+)/gi, '$1[REDACTED]')
+  .replace(/(?<![A-Za-z])((?:PASS|CREDENTIALS?)(?:[_-][A-Za-z0-9]+)*["']?\s*[=:]\s*)(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|\S+)/g, '$1[REDACTED]')
+  .replace(/((?:TOKEN|SECRET|PASSWORD|SENHA|SEGREDO|API_KEY|APIKEY)(?:[_-][A-Za-z0-9]+)*["']?\s*[=:]\s*)(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|\S+)/gi, '$1[REDACTED]');
 
 const today = new Date();
 const yesterday = new Date(today.getTime() - 86400000);

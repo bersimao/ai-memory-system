@@ -111,7 +111,7 @@ printf 'clean\n' > "$src/cron/distill.sh"; run --from-home >/dev/null 2>&1
 #   path.join(...)    no "/.claude/" substring at all; how every shipped .js does it
 C='~/.cla''ude'; D='$HOME/.cla''ude'; E='${HOME}/.cla''ude'
 i=0
-for probe in "cron/backup-push.sh|# see %s for the rule|line comment, ~" \
+for probe in "cron/alert.sh|# see %s for the rule|line comment, ~" \
              "hooks/daily-log-nudge.js|const X = 30;  // per %s|trailing comment, \${HOME}" \
              "cron/split-memory.py|\"\"\"See %s for the rule.\"\"\"|docstring, \"\$HOME\"" \
              "scripts/mem|MSG='see %s'|bare string, ~"; do

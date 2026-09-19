@@ -56,12 +56,29 @@ const isNoise = (t) => NOISE.some(p => t.startsWith(p));
 // pairs each prompt with its own reply.
 let lastAssistant = '';
 let lastUser = '';
+// Which skills this turn actually loaded. The `Skill` tool_use is the only exact
+// record of that, and it lives in the raw .jsonl, which Claude Code prunes at
+// ~30 days (measured 2026-09-07: oldest .jsonl on disk was exactly 31 days old,
+// while curated memory still had July). The transcript is not pruned, so the
+// name is carried across. Harvested inside the same backward walk, which stops
+// at the prompt that opened the turn — so these are this turn's skills.
+// ponytail: names only, no args. Direct reads of skills/<x>/... are NOT captured
+// and are the more common route; add them if the usage numbers need that arm.
+const skills = [];
 try {
   const lines = fs.readFileSync(transcriptPath, 'utf8').split('\n').filter(Boolean);
   for (let i = lines.length - 1; i >= 0 && !(lastAssistant && lastUser); i--) {
     let ev;
     try { ev = JSON.parse(lines[i]); } catch { continue; }
     if (ev.isSidechain || !ev.message) continue;
+    if (ev.type === 'assistant' && Array.isArray(ev.message.content)) {
+      for (let j = ev.message.content.length - 1; j >= 0; j--) {
+        const c = ev.message.content[j];
+        if (c && c.type === 'tool_use' && c.name === 'Skill' && c.input && c.input.skill) {
+          skills.push(c.input.skill);
+        }
+      }
+    }
     const role = ev.message.role;
     const text = extractText(ev.message.content);
     if (!text || isNoise(text)) continue;
@@ -95,6 +112,10 @@ try {
   let out = `\n## ${timestamp}\n`;
   if (lastUser) out += `**user:** ${clip(lastUser)}\n\n`;
   out += `**assistant:** ${clip(lastAssistant)}\n`;
+  // Walked backwards, so reverse for chronological order; dedupe keeps a skill
+  // invoked twice in one turn from reading as two distinct uses.
+  const used = [...new Set(skills.reverse())];
+  if (used.length) out += `\n**skills:** ${used.join(', ')}\n`;
   fs.appendFileSync(file, out);
 } catch {
   // Fire and forget — don't break the session.

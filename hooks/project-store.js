@@ -19,9 +19,10 @@ const os = require('os');
 //   node project-store.js --pin <anchor> [--for <cwd>]   pin an anchor
 
 const home = os.homedir();
-const PROJECTS = path.join(home, '.claude', 'projects');
-const ANCHORS = path.join(home, '.claude', 'data', 'store-anchors.json');
-const DEMANDS = path.join(home, '.claude', 'data', 'demands.json');
+const root = process.env.AI_MEMORY_HOME || path.join(home, '.claude');
+const PROJECTS = path.join(root, 'projects');
+const ANCHORS = path.join(root, 'data', 'store-anchors.json');
+const DEMANDS = path.join(root, 'data', 'demands.json');
 
 // Claude Code's own project-dir encoding: everything outside [A-Za-z0-9-] → '-'.
 const encodeProjectPath = (p) => p.replace(/[^a-zA-Z0-9-]/g, '-');
@@ -77,7 +78,7 @@ const storeDir = (cwd, transcriptPath) => {
 const demandsFor = (anchor) => {
   const reg = readJson(DEMANDS);
   return ((reg && reg.demands) || []).filter(
-    (d) => d.workdir && d.active !== false && (isUnder(d.workdir, anchor) || isUnder(anchor, d.workdir))
+    (d) => d.workdir && (isUnder(d.workdir, anchor) || isUnder(anchor, d.workdir))
   );
 };
 
@@ -104,6 +105,10 @@ if (require.main === module) {
   } else {
     const dir = arg('--resolve') || process.cwd();
     const { dir: store, anchor } = storeDir(dir);
+    if (argv.includes('--json')) {
+      console.log(JSON.stringify({ dir: store, anchor }));
+      process.exit(0);
+    }
     console.log(`cwd:    ${path.resolve(dir)}`);
     console.log(`anchor: ${anchor.dir} (${anchor.source})`);
     console.log(`store:  ${store}`);

@@ -12,11 +12,8 @@
 # Called from distill.sh; safe to run standalone. Never edits memory files.
 set -uo pipefail
 
-# Optional local config (Obsidian INBOX path, etc). Absent = alerts go to the
-# log only; every INBOX write below is already guarded by [ -f "$INBOX" ].
-[ -f "$HOME/.claude/data/memory.env" ] && . "$HOME/.claude/data/memory.env"
-INBOX="${CLAUDE_MEM_INBOX:-}"
 LOG="$HOME/.memsearch/cron.log"
+. "$(dirname "${BASH_SOURCE[0]}")/alert.sh"
 USAGE="$HOME/.claude/data/memsearch-usage.jsonl"
 # ponytail: 25 is a guess at "enough to see a score distribution", not a power
 # calculation. Raise it if the first review is inconclusive.
@@ -24,17 +21,25 @@ THRESHOLD=25
 
 [ -f "$USAGE" ] || exit 0
 
-n=$(grep -c '"ev": "search"' "$USAGE" 2>/dev/null || echo 0)
+# Sem `|| echo 0`: grep -c JA imprime 0 e sai 1 quando nao casa nada, e o
+# fallback acrescentava uma segunda linha ("0\n0") que quebrava o teste numerico
+# e caia direto no alerta (Codex, 2026-09-09).
+n=$(grep -c '"ev": "search"' "$USAGE" 2>/dev/null); n=${n:-0}
 echo "[$(date -Iseconds)] mem-review: ${n}/${THRESHOLD} searches logged" >>"$LOG"
 
 [ "$n" -lt "$THRESHOLD" ] && exit 0
 
-# Dedup guard — one open alert at a time. Marker substring is unique to this
-# check (check-hooks.sh dedups on "MEMORY-HOOKS ALERT", check-caps.sh on
-# "MEMORY-CAP ALERT"); do not reuse either.
-msg="📊 MEMORY-RECALL REVIEW: ${n} real searches logged — run \`~/.claude/scripts/mem report\` and decide (a) the miss threshold, (b) sources never opened, (c) whether entry format should change."
-if [ -f "$INBOX" ] && ! grep -qF "MEMORY-RECALL REVIEW:" "$INBOX"; then
-  printf -- '- [ ] %s\n' "$msg" >>"$INBOX"
-  echo "[$(date -Iseconds)] mem-review: alert raised" >>"$LOG"
-fi
+# The marker must stay unique to this check: alert.sh dedups on a substring,
+# so sharing one with another tripwire would let this alert suppress that one.
+msg="📊 ${n} real searches logged — run \`~/.claude/scripts/mem report\` and decide (a) the miss threshold, (b) sources never opened, (c) whether entry format should change."
+# Stays OPEN until the review actually happens — there is no automatic
+# recovery signal for "the user read the report", which is the point: the
+# nudge should keep showing up in /end-of-day until it is dealt with.
+# A escrita do alerta pode falhar (log sem permissao, disco cheio). Sem checar,
+# a recuperacao sai 0 e o alerta antigo fica aberto para sempre — ou o alerta
+# novo some e o check sai 0 como se estivesse tudo bem. Falhou = sai 1.
+# alert_once, nao alert: a contagem so cresce, entao um `alert` reabria o nudge
+# na manha seguinte a cada fechamento manual. Fechou = revisado; para pedir
+# outra revisao, reabra de proposito.
+alert_once "MEMORY-RECALL REVIEW" "$msg" || exit 1
 exit 0

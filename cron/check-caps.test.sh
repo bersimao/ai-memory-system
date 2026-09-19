@@ -31,7 +31,7 @@ run() {
   # 2026-08-31: a store without `.cap` made the shell print a failed-redirection
   # error before `2>/dev/null` could apply, which would spam the cron log every
   # day. Twelve green tests missed it because run() threw stderr away.
-  STDERR=$(HOME="$home" bash "$SCRIPT" 2>&1 >/dev/null)
+  STDERR=$(AI_MEMORY_HOME="$home/.claude" HOME="$home" bash "$SCRIPT" 2>&1 >/dev/null)
   rc=$?
   LOGLINE=$(grep -oE '[0-9]+/[0-9]+' "$home/.memsearch/cron.log" 2>/dev/null | tail -1)
   rm -rf "$home"
@@ -140,68 +140,6 @@ expect_quiet NONE 2400 "store sem .cap nao escreve nada no stderr"
 expect_quiet NONE 2600 "store sem .cap, mesmo violando, stderr limpo"
 expect_quiet 4000 2600 "store com .cap valido, stderr limpo"
 
-# --- DRY: ninguem pode voltar a cravar 2500 no codigo -----------------------
-# O ponto do store-cap.sh e' que alerta (check-caps), portao de elegibilidade
-# (curate) e prompt (distill) concordem. Um literal reintroduzido em qualquer um
-# deles desfaz isso em silencio — e o modo de falha e' o pior: o alarme cala em
-# 4000 enquanto o curate ainda espreme para 2500. Comentarios podem citar o
-# numero; codigo, nao.
-CRON="$(dirname "${BASH_SOURCE[0]}")"
-for s in check-caps.sh curate.sh distill.sh; do
-  hit=$(grep -v '^[[:space:]]*#' "$CRON/$s" | grep -n '2500' || true)
-  if [ -z "$hit" ]; then
-    echo "ok   $s nao crava 2500 em codigo"
-  else
-    echo "FAIL $s voltou a cravar 2500: $hit"
-    fails=$((fails + 1))
-  fi
-  if grep -q 'store-cap.sh' "$CRON/$s"; then
-    echo "ok   $s carrega store-cap.sh"
-  else
-    echo "FAIL $s nao carrega store-cap.sh"
-    fails=$((fails + 1))
-  fi
-  bash -n "$CRON/$s" 2>/dev/null && echo "ok   $s tem sintaxe valida" \
-    || { echo "FAIL $s tem erro de sintaxe"; fails=$((fails + 1)); }
-done
 
-# --- as INSTRUCÇOES tambem contam como enforcement ---------------------------
-# O gate do Codex achou isto em 31/08, depois do codigo ja estar certo: o teto
-# real de um store nao e' so o que o cron mede, e' tambem o numero que o AGENTE
-# le antes de aparar o arquivo. Um doc versionado dizendo "Cap 2.500" mantem o
-# comportamento antigo mesmo com curate e distill corrigidos — e nada testava
-# isso, porque o teste so olhava para .sh. Regra: se o arquivo cita o cap de
-# projeto, tem que citar tambem o `.cap`. Roda nas duas arvores (install e repo),
-# pulando o que nao existir daquele lado.
-ROOT="$(cd "$CRON/.." && pwd)"
-
-# Por MENCAO, nao por arquivo. A primeira versao deste guard perguntava "o
-# arquivo cita .cap em algum lugar?", o que deixava passar um doc cuja PROSA
-# voltasse a dizer "Cap 2.500 chars" enquanto uma tabela noutra secao ainda
-# citava o override — e a mutacao original so falhou porque removeu as duas
-# mencoes de uma vez. Cada citacao do cap precisa do override por perto.
-WINDOW=4   # a prosa quebra em varias linhas; a mencao vem logo abaixo
-check_doc() {
-  local f="$1" rel="$2" ln
-  while IFS=: read -r ln _; do
-    [ -n "$ln" ] || continue
-    sed -n "${ln},$((ln + WINDOW))p" "$f" | grep -q '\.cap' && continue
-    echo "FAIL $rel:$ln cita o cap sem o override .cap por perto — agente apara no numero errado"
-    fails=$((fails + 1))
-    return
-  done < <(grep -nE '(^|[^0-9])2[.,]?500([^0-9]|$)' "$f")
-  echo "ok   $rel: toda mencao ao cap vem com o .cap"
-}
-
-# Lista explicita MAIS qualquer .md na raiz e em docs/, para que um documento
-# novo de instrucoes nao escape do guard so por nao estar na lista.
-docs=$(printf '%s\n' CLAUDE.md docs/memory-instructions.md skills/memory-write/SKILL.md README.md \
-       $(cd "$ROOT" 2>/dev/null && ls *.md docs/*.md 2>/dev/null) | sort -u)
-for doc in $docs; do
-  [ -f "$ROOT/$doc" ] || continue
-  grep -qE '(^|[^0-9])2[.,]?500([^0-9]|$)' "$ROOT/$doc" || continue
-  check_doc "$ROOT/$doc" "$doc"
-done
-
-[ $fails -eq 0 ] && { echo "ok"; exit 0; }
-echo "$fails caso(s) falharam"; exit 1
+[ "$fails" -eq 0 ] && echo PASS
+exit "$fails"

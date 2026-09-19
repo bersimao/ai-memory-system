@@ -8,10 +8,8 @@ The system is described in `README.md`; this file is about **working on it**.
 An instruction in a prompt is not a guarantee. Every safety property here is
 enforced by code that verifies and reverts, never by asking a model nicely:
 
-- `cron/split-memory.py` — the LLM proposes which sections to move; **code**
-  moves them, checks no line was lost, and reverts if any was.
-- `cron/curate.sh` — a curated file that shrinks ≥30% is flagged, ≥50% is
-  rejected and restored from backup, with the rejected proposal kept on disk.
+- `scripts/memory_core.py` — validates revisions and preservation, journals full originals, and recovers interrupted writes.
+- `cron/curate.sh` — relocates overflowing indexes verbatim; it does not perform model rewrites.
 - `sync-release.sh` — refuses to copy anything carrying an absolute home path,
   and scans itself while doing it.
 

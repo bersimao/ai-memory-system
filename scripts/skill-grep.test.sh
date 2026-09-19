@@ -76,7 +76,8 @@ make_fake_mem() {  # make_fake_mem <path> <plain-text-body>
 shift; shift  # cmd, query
 while [ \$# -gt 0 ]; do
   case "\$1" in
-    -k) shift 2 ;;
+    -k|--domain) shift 2 ;;
+    --semantic) shift ;;
     -c) case "\$2" in curated|transcripts) shift 2 ;; *) echo "fake-mem: bad -c '\$2'" >&2; exit 2 ;; esac ;;
     *) echo "fake-mem: unexpected arg '\$1' — skill-grep must not forward raw flags" >&2; exit 2 ;;
   esac

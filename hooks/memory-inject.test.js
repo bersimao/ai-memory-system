@@ -160,6 +160,29 @@ if (!/Snapshot truncated/.test(out)) {
   }
 }
 
+// 10 — short-keyword secrets are redacted; prose that merely contains the
+// keyword is left intact (same rules as memory_core.redact).
+{
+  const repo = mkRepo(path.join(root, 'work', 'redact-case'));
+  // Redaction guards the raw-transcript fallback (no daily log yet today).
+  seedStore(repo, '# M\n');
+  const d = new Date();
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const tdir = path.join(projects, encode(repo), 'context', 'transcripts');
+  fs.mkdirSync(tdir, { recursive: true });
+  fs.writeFileSync(path.join(tdir, `${day}.md`), 'DB_PASS=hunter2\nUid=sa;Pwd=S3cret;Db=y\nCREDENTIALS=abc123\n' +
+    'Authorization: Basic dXNlcjpwYXNz\nfirst pass: we split\nbypass: no\n' +
+    'DB_PASS="alpha quotedspace"\n{"password": "jsonsecret", "n": 1}\nPASS="a\\"b escapedsecret"\n', 'utf8');
+  const out = snapshot(repo);
+  if (!out.includes('first pass')) bad('fallback do transcript nao entrou no snapshot — caso 10 nao prova nada');
+  const leaked = ['hunter2', 'S3cret', 'abc123', 'dXNlcjpwYXNz', 'quotedspace', 'jsonsecret', 'escapedsecret'].filter((x) => out.includes(x));
+  if (leaked.length) bad(`segredo vazou no snapshot: ${leaked.join(', ')}`);
+  else ok('DB_PASS/Pwd/CREDENTIALS/Basic redigidos');
+  if (out.includes('first pass: we split') && out.includes('bypass: no') && out.includes(';Db=y')) {
+    ok('prosa com "pass" e resto da connection string intactos');
+  } else bad('redacao comeu prosa ou o resto da connection string');
+}
+
 fs.rmSync(root, { recursive: true, force: true });
 if (fails) { console.log(`FAIL (${fails})`); process.exit(1); }
 console.log('PASS');
