@@ -1,3 +1,7 @@
 #!/usr/bin/env bash
 # One shared CLI; no host-specific memory database.
-exec python3 "$(dirname "$0")/memory-cli.py" "$@"
+# The CLI lives in <root>/scripts: an install at --root /srv/mem must not read
+# or write ~/.claude. readlink -f so a symlinked `mem` on PATH still finds it.
+here="$(dirname "$(readlink -f "$0")")"
+export AI_MEMORY_HOME="${AI_MEMORY_HOME:-$(cd "$here/.." && pwd)}"
+exec python3 "$here/memory-cli.py" "$@"

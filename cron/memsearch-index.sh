@@ -7,10 +7,21 @@
 # collection buries the authoritative answer. Measured 2026-07-29: 13/15 top
 # hits were transcripts and skills/ was not indexed at all.
 set -uo pipefail
+# Same root rule as distill.sh: the script lives inside the memory root, an
+# explicit AI_MEMORY_HOME still wins. The lock MUST be the one memory-maintain.py
+# reindex uses (<root>/data/memory-system/index.lock), or a custom-root install
+# runs two indexers at once.
+R="${AI_MEMORY_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"
 # Share the same lock as semantic retrieval and accepted-write indexing.
-mkdir -p "$HOME/.claude/data/memory-system"
-exec 9>"$HOME/.claude/data/memory-system/index.lock"
+mkdir -p "$R/data/memory-system"
+exec 9>"$R/data/memory-system/index.lock"
 flock -w 300 9 || exit 1
+# One memsearch DB per user account: only the root that owns it may index it,
+# because `memsearch index` prunes every source it was not handed.
+if ! /usr/bin/python3 -c 'import sys; sys.path.insert(0, sys.argv[1] + "/scripts"); from memory_core import semantic_db_owned_by; sys.exit(0 if semantic_db_owned_by(sys.argv[1]) else 3)' "$R"; then
+  echo "memsearch-index: semantic DB belongs to another memory root (or memsearch missing); skipped" >&2
+  exit 0
+fi
 shopt -s nullglob  # a project with no context/ must expand to nothing, not a literal glob
 
 LOG="$HOME/.memsearch/cron.log"
@@ -18,6 +29,7 @@ mkdir -p "$(dirname "$LOG")"
 
 ts() { date -Iseconds; }
 
+rc=0
 {
   echo
   echo "=== [$(ts)] memsearch-index ==="
@@ -34,28 +46,31 @@ ts() { date -Iseconds; }
   # context/*.md is MEMORY.md (the index); the pages it links to live in
   # context/topics/ since 2026-08-21 — both globs are needed.
   /usr/bin/python3 -m memsearch index \
-    "$HOME"/.claude/skills/*/knowledge \
-    "$HOME"/.claude/skills/*/references \
-    "$HOME/.claude/context" \
-    "$HOME"/.claude/projects/*/context/*.md \
-    "$HOME"/.claude/projects/*/context/topics \
-    "$HOME"/.claude/projects/*/context/memory \
-    "$HOME"/.claude/projects/*/context/checkpoints
+    "$R"/skills/*/knowledge \
+    "$R"/skills/*/references \
+    "$R/context" \
+    "$R"/projects/*/context/*.md \
+    "$R"/projects/*/context/topics \
+    "$R"/projects/*/context/memory \
+    "$R"/projects/*/context/checkpoints || rc=1
 
   echo "--- L3: transcripts -> memsearch_transcripts"
   /usr/bin/python3 -m memsearch index -c memsearch_transcripts \
-    "$HOME"/.claude/projects/*/context/transcripts
+    "$R"/projects/*/context/transcripts || rc=1
 
   # Prune chunks whose source file no longer exists. memsearch only cleans stale
   # chunks for files it is handed, so a deleted or MOVED file leaves its chunks
   # behind forever — search then returns dead paths. (37 such chunks existed
   # after the 2026-07-29 legacy-store migration.)
   echo "--- prune: sources that no longer exist"
-  /usr/bin/python3 - <<'PY'
+  /usr/bin/python3 - <<'PY' || rc=1
 import os
 from pymilvus import MilvusClient
+from memsearch.config import resolve_config
 from memsearch.store import _escape_filter_value
-c = MilvusClient(uri=os.path.expanduser("~/.memsearch/milvus.db"))
+# The SAME database the ownership check above resolved — never a hardcoded path,
+# or a root configured with its own DB would prune another root's default DB.
+c = MilvusClient(uri=os.path.expanduser(resolve_config().milvus.uri))
 for coll in ("memsearch_chunks", "memsearch_transcripts"):
     c.load_collection(coll)
     # Iterate instead of one query with a fixed limit: limit=16000 hid 80 of 377
@@ -77,3 +92,5 @@ for coll in ("memsearch_chunks", "memsearch_transcripts"):
 c.close()
 PY
 } >>"$LOG" 2>&1
+# An indexing failure must not hide behind a successful prune.
+exit "$rc"

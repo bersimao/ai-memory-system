@@ -210,6 +210,19 @@ def maintain(memory, mode, limit=40):
 
 def reindex(memory):
     import fcntl
+    import importlib.util
+    # Semantic search is optional. A lexical-only install still writes dirty
+    # receipts on every accepted write; without this gate the nightly index step
+    # failed on the memsearch import and every maintenance run alerted. Receipts
+    # stay queued (one per path, overwritten), so installing memsearch later
+    # indexes them on the next run.
+    if importlib.util.find_spec('memsearch') is None:
+        print('memsearch not installed; semantic indexing skipped (lexical search unaffected).')
+        return 0
+    from memory_core import semantic_db_owned_by
+    if not semantic_db_owned_by(memory.root):
+        print('semantic DB belongs to another memory root; indexing skipped (lexical search unaffected).')
+        return 0
     memory.state.mkdir(parents=True, exist_ok=True)
     with (memory.state / 'index.lock').open('a') as lock:
         # Wait in this detached worker. Returning on contention would strand

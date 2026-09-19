@@ -7,7 +7,8 @@ locking adapter.
 
 ## Install
 
-Requires Python 3.10+, Node.js, and Bash. Existing Markdown remains in place.
+Requires Python 3.10+, Node.js, Git, and Bash; the installer stops before writing
+anything if one is missing. Existing Markdown remains in place.
 
 ```bash
 ./install.sh --root "$HOME/.claude" --codex-home "$HOME/.codex" --scope all --dry-run
@@ -20,14 +21,46 @@ backs up changed files, merges owned hooks, preserves unrelated configuration,
 updates managed instructions, and records installed file hashes. Restart sessions.
 Codex may require reviewing the exact new hook definitions in `/hooks`.
 
+Without `--yes` the installer only previews, and nothing is written.
+
 Optional: add `--semantic-updates` when memsearch is already configured. Accepted
 writes then trigger a detached, locked indexing worker; failed updates remain queued.
 The default lexical engine reads current files and needs neither embeddings nor a model.
+Without memsearch installed, the maintenance jobs skip semantic indexing and keep
+the pending updates queued, so installing memsearch later catches up.
 
-Existing schedules are preserved. A fresh installation can schedule `cron/distill.sh`
-for extraction and `cron/curate.sh` for lossless index splitting, and keep periodic
-`cron/memsearch-index.sh` reconciliation if using memsearch. The distill wrapper retains
-an existing executable private backup job; installation never invokes or creates a push.
+The installer never creates schedules, and existing ones are preserved. To schedule
+maintenance, add entries yourself, for example with `crontab -e`:
+
+```cron
+30 3 * * *  $HOME/.claude/cron/distill.sh   # daily: transcripts, extraction, index
+0  4 * * 0  $HOME/.claude/cron/curate.sh    # weekly: lossless index splitting
+```
+
+Use your `--root` path if it differs; the cron wrappers and the `mem` CLI derive the
+memory root from their own location (an explicit `AI_MEMORY_HOME` still wins).
+`distill.sh` exits non-zero when maintenance fails, so cron and systemd see the failure.
+
+Keep periodic `cron/memsearch-index.sh` reconciliation if you use memsearch. memsearch
+keeps one local vector database per user account (`~/.memsearch/milvus.db` by
+default), and its indexer prunes every source it isn't handed, so two roots can't
+share it. The first root to use it claims it in `milvus.db.owner-root`; any other root
+skips semantic indexing and search and keeps lexical retrieval. To move ownership,
+delete that file.
+
+Nothing in the release commits or pushes anything. `distill.sh` runs
+`cron/backup-push.sh` after maintenance only if you put an executable script there
+yourself; the installer does not create one.
+
+**Known limits of a custom `--root`:**
+- Transcript capture reads Claude Code sessions from `<root>/projects`, so the root
+  must be Claude Code's own config directory (the default `~/.claude`, or wherever
+  `CLAUDE_CONFIG_DIR` points). Codex sessions are always read from `~/.codex/sessions`,
+  even if you install with a different `--codex-home`.
+- The ownership claim covers a local memsearch database only. With a remote Milvus
+  server, give each root its own server or database; two roots sharing one would
+  prune each other's sources.
+
 Background extraction defaults to tool-free Claude CLI; see [runtime design](docs/model-agnostic.md).
 
 ## What happens during a session

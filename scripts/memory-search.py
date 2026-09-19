@@ -25,6 +25,9 @@ async def search(memory, query, cwd, scope, domain, collection, limit):
                 if time.monotonic() >= deadline:
                     raise ValueError('semantic index is busy; retry or use lexical retrieval')
                 await asyncio.sleep(0.1)
+        from memory_core import semantic_db_owned_by
+        if not semantic_db_owned_by(memory.root):
+            raise ValueError('semantic index belongs to another memory root; use lexical retrieval')
         return await search_scoped(memory, query, cwd, scope, domain, collection, limit)
 
 

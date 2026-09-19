@@ -41,7 +41,7 @@
 # Growth: ~200 bytes an entry; four tripwires re-announcing daily is roughly
 # 300 KB/year, and the realistic case (mostly quiet) far less. No rotation on purpose: truncating this file
 # would drop the OPEN state it exists to hold. Compact it only by hand.
-ALERTS="${CLAUDE_ALERT_LOG:-$HOME/.claude/logs/alerts.log}"
+ALERTS="${CLAUDE_ALERT_LOG:-${AI_MEMORY_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/logs/alerts.log}"
 
 # Markers are a FIELD, not a substring: brackets and whitespace would make the
 # entry ambiguous to parse (and untypeable on the CLI), so they are folded away

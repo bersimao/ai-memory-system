@@ -52,7 +52,6 @@ MANIFEST=(
   cron/store-cap.sh
   cron/check-hooks.sh
   cron/check-mem-review.sh
-  cron/backup-push.sh
   scripts/mem
   scripts/mem.test.sh
   scripts/llm-run

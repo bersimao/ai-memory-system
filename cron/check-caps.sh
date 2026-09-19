@@ -14,6 +14,7 @@
 set -uo pipefail
 
 LOG="$HOME/.memsearch/cron.log"
+MEM_ROOT="${AI_MEMORY_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"  # script lives in the memory root
 # Alerts go to ~/.claude/logs/alerts.log, never to the Obsidian INBOX; the
 # channel and the reason live in alert.sh. /end-of-day reads that log.
 . "$(dirname "${BASH_SOURCE[0]}")/alert.sh"
@@ -37,8 +38,8 @@ check() {  # check <file> <cap> <label>
   over="${over}  ${label}: ${n}/${cap}"$'\n'
 }
 
-check "$HOME/.claude/context/USER.md"   1375 "USER.md"
-check "$HOME/.claude/context/MEMORY.md" 4000 "global MEMORY.md"
+check "$MEM_ROOT/context/USER.md"   1375 "USER.md"
+check "$MEM_ROOT/context/MEMORY.md" 4000 "global MEMORY.md"
 
 # Per-store cap: optional `context/.cap`, default 2500. Parser and rationale
 # live in store-cap.sh, shared with curate.sh and distill.sh so the three
@@ -46,7 +47,7 @@ check "$HOME/.claude/context/MEMORY.md" 4000 "global MEMORY.md"
 . "$(dirname "${BASH_SOURCE[0]}")/store-cap.sh"
 
 shopt -s nullglob
-for f in "$HOME"/.claude/projects/*/context/MEMORY.md; do
+for f in "$MEM_ROOT"/projects/*/context/MEMORY.md; do
   check "$f" "$(store_cap "$(dirname "$f")")" "$(basename "$(dirname "$(dirname "$f")")")"
 done
 

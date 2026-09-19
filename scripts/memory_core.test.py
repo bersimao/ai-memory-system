@@ -6,10 +6,11 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
-from memory_core import Memory, VERSION, atomic, digest, json_read, json_write, read
+from memory_core import Memory, VERSION, atomic, digest, json_read, json_write, read, redact
 
 
 def module(name, path):
@@ -22,6 +23,21 @@ def module(name, path):
 BASE = Path(__file__).resolve().parent.parent
 hooks = module('lifecycle', BASE / 'hooks/memory-lifecycle.py')
 maintain = module('maintain', BASE / 'scripts/memory-maintain.py')
+
+
+import memory_core
+_REAL_OWNER_CHECK = memory_core.semantic_db_owned_by
+_owner_patch = patch('memory_core.semantic_db_owned_by', return_value=True)
+
+
+def setUpModule():
+    # The real check claims <memsearch DB>.owner-root. On a machine with memsearch
+    # installed, a test reaching it would hand the user's live DB to a temp root.
+    _owner_patch.start()
+
+
+def tearDownModule():
+    _owner_patch.stop()
 
 
 class Tests(unittest.TestCase):
@@ -90,6 +106,45 @@ class Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'secret'):
             self.apply(self.memory.change(self.rel, read(self.memory.path(self.rel)) + 'PASSWORD=secret-value'))
         self.assertEqual(list((self.memory.state / 'journal').glob('*')), [])
+
+    def test_redact_short_keywords_without_prose_false_positives(self):
+        for secret in ('DB_PASS=hunter2', 'export PWD_DB=abc', 'Uid=sa;Pwd=S3cret;Db=y',
+                       'CREDENTIALS=abc', 'Authorization: Basic dXNlcjpwYXNz'):
+            self.assertIn('[REDACTED]', redact(secret), secret)
+        self.assertNotIn('S3cret', redact('Uid=sa;Pwd=S3cret;Db=y'))
+        self.assertIn(';Db=y', redact('Uid=sa;Pwd=S3cret;Db=y'))
+        for prose in ('bypass: no', 'first pass: we split', 'passo: 1', 'compass=north', '"first pass": "ok"'):
+            self.assertEqual(redact(prose), prose)
+        for quoted, leak in (('DB_PASS="alpha beta" tail', 'beta'), ('{"DB_PASS": "synthetic secret"}', 'synthetic'),
+                             ('{"password": "s3cret", "n": 1}', 's3cret'), ("token: 'a b c'", 'b c'),
+                             ('Uid=sa;Pwd="x y";Db=z', 'x y'), ('PASS="a\\"b escapedtail"', 'escapedtail'),
+                             ("token: 'it\\'s hidden'", 'hidden')):
+            self.assertNotIn(leak, redact(quoted), quoted)
+        self.assertIn('tail', redact('DB_PASS="alpha beta" tail'))
+
+    def test_semantic_db_has_one_owner_root(self):
+        db = Path(self.tmp.name) / 'ms' / 'milvus.db'
+        config = types.SimpleNamespace(resolve_config=lambda: types.SimpleNamespace(milvus=types.SimpleNamespace(uri=str(db))))
+        with patch.dict(sys.modules, {'memsearch': types.SimpleNamespace(), 'memsearch.config': config}):
+            self.assertTrue(_REAL_OWNER_CHECK(self.root))
+            self.assertFalse(_REAL_OWNER_CHECK(Path(self.tmp.name) / 'other-root'))
+            self.assertTrue(_REAL_OWNER_CHECK(self.root))
+        remote = types.SimpleNamespace(resolve_config=lambda: types.SimpleNamespace(milvus=types.SimpleNamespace(uri='http://milvus:19530')))
+        with patch.dict(sys.modules, {'memsearch': types.SimpleNamespace(), 'memsearch.config': remote}):
+            self.assertTrue(_REAL_OWNER_CHECK(Path(self.tmp.name) / 'other-root'))
+
+    def test_mem_wrapper_uses_its_own_root_even_via_symlink(self):
+        root = Path(self.tmp.name) / 'custom-root'
+        (root / 'scripts').mkdir(parents=True)
+        (root / 'scripts/mem').write_bytes((BASE / 'scripts/mem').read_bytes())
+        (root / 'scripts/mem').chmod(0o755)
+        (root / 'scripts/memory-cli.py').write_text('import os\nprint(os.environ["AI_MEMORY_HOME"])\n')
+        link = Path(self.tmp.name) / 'bin-mem'
+        link.symlink_to(root / 'scripts/mem')
+        env = {k: v for k, v in os.environ.items() if k != 'AI_MEMORY_HOME'}
+        for entry in (root / 'scripts/mem', link):
+            out = subprocess.run(['bash', str(entry)], capture_output=True, text=True, env=env).stdout.strip()
+            self.assertEqual(Path(out).resolve(), root.resolve(), entry)
 
     def test_recovery_completes_prepared_transaction(self):
         old = read(self.memory.path(self.rel))
@@ -258,8 +313,17 @@ class Tests(unittest.TestCase):
 
     def test_index_failure_retains_dirty_receipt(self):
         self.apply(self.memory.change(self.rel, read(self.memory.path(self.rel)) + 'new'))
-        with patch.object(maintain.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'offline')):
+        with patch('importlib.util.find_spec', return_value=object()), \
+             patch.object(maintain.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'offline')):
             self.assertEqual(maintain.reindex(self.memory), 1)
+        self.assertEqual(len(list((self.memory.state / 'dirty').glob('*.json'))), 1)
+
+    def test_lexical_only_install_skips_index_and_keeps_receipt(self):
+        self.apply(self.memory.change(self.rel, read(self.memory.path(self.rel)) + 'new'))
+        with patch('importlib.util.find_spec', return_value=None), \
+             patch.object(maintain.subprocess, 'run') as run:
+            self.assertEqual(maintain.reindex(self.memory), 0)
+        run.assert_not_called()
         self.assertEqual(len(list((self.memory.state / 'dirty').glob('*.json'))), 1)
 
     def test_model_has_no_tools_or_mcp_and_no_permission_bypass(self):

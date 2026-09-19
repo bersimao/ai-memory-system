@@ -77,7 +77,42 @@ def redact(text):
     text = re.sub(r'\bAKIA[0-9A-Z]{16}\b', '[REDACTED]', text)
     text = re.sub(r'(://[^/\s:@]+):[^/\s]+@', r'\1:[REDACTED]@', text)
     text = re.sub(r'\bBearer\s+\S+', 'Bearer [REDACTED]', text, flags=re.I)
-    return re.sub(r'((?:TOKEN|SECRET|PASSWORD|SENHA|SEGREDO|API_KEY|APIKEY)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)\S+', r'\1[REDACTED]', text, flags=re.I)
+    text = re.sub(r'(Authorization\s*:\s*Basic\s+)\S+', r'\1[REDACTED]', text, flags=re.I)
+    # Short keywords need a non-letter on the left ("bypass:", "compass=" are not
+    # secrets). PASS/CREDENTIALS are uppercase-only: "first pass: ..." is prose,
+    # DB_PASS=... is an env var. PWD/PASSWD stay case-insensitive for the
+    # "Pwd=...;" connection-string form.
+    # Keys may be quoted ("DB_PASS": ...) and values may be quoted with spaces
+    # (PASS="a b"): a quoted value is consumed whole, never cut at the space.
+    text = re.sub(r'(?<![A-Za-z])((?:PASSWD|PWD)(?:[_-][A-Za-z0-9]+)*["\']?\s*[=:]\s*)(?:"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|[^\s;]+)', r'\1[REDACTED]', text, flags=re.I)
+    text = re.sub(r'(?<![A-Za-z])((?:PASS|CREDENTIALS?)(?:[_-][A-Za-z0-9]+)*["\']?\s*[=:]\s*)(?:"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|\S+)', r'\1[REDACTED]', text)
+    return re.sub(r'((?:TOKEN|SECRET|PASSWORD|SENHA|SEGREDO|API_KEY|APIKEY)(?:[_-][A-Za-z0-9]+)*["\']?\s*[=:]\s*)(?:"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|\S+)', r'\1[REDACTED]', text, flags=re.I)
+
+
+def semantic_db_owned_by(root):
+    """True when this memory root may use the memsearch vector DB.
+
+    memsearch keeps ONE local DB per user account (~/.memsearch/milvus.db by
+    default), and its `index` command prunes every source it was not handed. Two
+    memory roots sharing it would delete each other's chunks on every run, and a
+    per-root lock cannot see the other root. So the first root to use the DB
+    claims it in `<db>.owner-root`; any other root skips semantic work.
+    A remote Milvus URI is the operator's to partition; it is not claimed here.
+    """
+    from memsearch.config import resolve_config
+    uri = resolve_config().milvus.uri
+    if '://' in uri:
+        return True
+    owner = Path(os.path.expanduser(uri) + '.owner-root')
+    owner.parent.mkdir(parents=True, exist_ok=True)
+    mine = str(Path(root).resolve())
+    try:
+        fd = os.open(owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return owner.read_text(encoding='utf-8').strip() == mine
+    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+        stream.write(mine + '\n')
+    return True
 
 
 def tokens(text):

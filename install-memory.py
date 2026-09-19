@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 
 HERE = Path(__file__).resolve().parent
@@ -44,6 +45,12 @@ def main():
     parser.add_argument('--yes', '-y', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
+    # node runs the hooks, git anchors the per-repo store, bash runs the cron
+    # wrappers. Without this check a machine lacking node printed "Installed"
+    # and every hook then failed at session start.
+    missing = [dep for dep in ('node', 'git', 'bash') if shutil.which(dep) is None]
+    if missing:
+        sys.exit('missing dependency: ' + ', '.join(missing) + ' (install it and re-run)')
     root = Path(args.root).expanduser().resolve()
     codex = Path(args.codex_home).expanduser().resolve() if args.codex_home else None
     manifest = re.search(r'^MANIFEST=\(\n(.*?)\n\)', (HERE / 'sync-release.sh').read_text(), re.M | re.S).group(1).split()

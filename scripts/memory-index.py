@@ -7,7 +7,7 @@ source absent from its input list in 0.4.4; only _index_file is safe for deltas.
 import argparse
 import asyncio
 from pathlib import Path
-from memory_core import Memory
+from memory_core import Memory, semantic_db_owned_by
 
 
 async def update(paths, collection='memsearch_chunks', batch_across_files=False):
@@ -59,6 +59,8 @@ if __name__ == '__main__':
     parser.add_argument('paths', nargs='*')
     args = parser.parse_args()
     memory = Memory(args.root)
+    if not semantic_db_owned_by(memory.root):
+        raise SystemExit('semantic DB belongs to another memory root; not indexing')
     if args.reconcile:
         import fcntl
         memory.state.mkdir(parents=True, exist_ok=True)

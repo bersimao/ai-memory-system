@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -24,6 +25,16 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.root.exists())
         self.assertFalse(self.codex.exists())
+
+    def test_missing_node_fails_before_any_write(self):
+        bin_dir = Path(self.temp.name) / 'bin'
+        bin_dir.mkdir()
+        (bin_dir / 'python3').symlink_to(sys.executable)
+        result = subprocess.run(['python3', str(HERE / 'install-memory.py'), '--root', str(self.root), '--yes'],
+                                capture_output=True, text=True, env={'PATH': str(bin_dir)})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('node', result.stderr)
+        self.assertFalse(self.root.exists())
 
     def test_install_preserves_unrelated_hooks_content_and_is_idempotent(self):
         self.root.mkdir()

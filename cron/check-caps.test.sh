@@ -31,7 +31,7 @@ run() {
   # 2026-08-31: a store without `.cap` made the shell print a failed-redirection
   # error before `2>/dev/null` could apply, which would spam the cron log every
   # day. Twelve green tests missed it because run() threw stderr away.
-  STDERR=$(HOME="$home" bash "$SCRIPT" 2>&1 >/dev/null)
+  STDERR=$(AI_MEMORY_HOME="$home/.claude" HOME="$home" bash "$SCRIPT" 2>&1 >/dev/null)
   rc=$?
   LOGLINE=$(grep -oE '[0-9]+/[0-9]+' "$home/.memsearch/cron.log" 2>/dev/null | tail -1)
   rm -rf "$home"
