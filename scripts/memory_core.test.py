@@ -698,7 +698,18 @@ class IntegrationTests(unittest.TestCase):
         (linked_ctx / 'inner.md').symlink_to(big)  # reported only if the doctor walks through the link
         (self.root / 'projects/other').mkdir()
         (self.root / 'projects/other/context').symlink_to(linked_ctx)
-        self.assertEqual(set(doctor.symlinks(self.root)), {self.root / self.rel, self.root / 'projects/other/context'})
+        skills = self.root / 'skills'
+        atomic(skills / 'plain/references/r.md', 'real\n')
+        (skills / 'plain/references/linked.md').symlink_to(big)          # dropped from search: report
+        atomic(Path(self.tmp.name) / 'ext-skill/knowledge/k.md', 'k\n')
+        (skills / 'installed').symlink_to(Path(self.tmp.name) / 'ext-skill')  # hides knowledge/: report
+        (Path(self.tmp.name) / 'bare-skill').mkdir()
+        (skills / 'kl').mkdir()
+        (skills / 'kl/knowledge').symlink_to(Path(self.tmp.name) / 'ext-skill/knowledge')  # search root itself linked: report
+        (skills / 'bare').symlink_to(Path(self.tmp.name) / 'bare-skill')     # SKILL.md only: normal, quiet
+        self.assertEqual(set(doctor.symlinks(self.root)), {self.root / self.rel, self.root / 'projects/other/context',
+                                                           skills / 'plain/references/linked.md', skills / 'installed',
+                                                           skills / 'kl/knowledge'})
         issues = doctor.diagnose(self.memory)['issues']
         self.assertEqual([i for i in issues if i['type'] == 'over_cap'], [])  # a read through the link would flag 3000 > 2500
         # Installed files are copies: a link to an identical file, or a path escaping the root, is drift.

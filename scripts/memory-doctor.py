@@ -41,6 +41,22 @@ def markdown(ctx):
 def symlinks(root):
     """Links inside the store: Memory.read_stored() skips them as if absent, so they surface here."""
     found, dirs = contexts(root)
+    # Skill knowledge/ and references/ are search roots too. A linked skill (npx skills add
+    # installs them as links) is fine until it carries documents the search would then drop.
+    skills = root / 'skills'
+    if skills.is_symlink():
+        found.append(skills)
+    for skill in sorted(skills.iterdir()) if skills.is_dir() and not skills.is_symlink() else []:
+        bases = [skill / kind for kind in ('knowledge', 'references')]
+        if skill.is_symlink():
+            if any(base.is_dir() for base in bases):  # a stat through the link, never a read
+                found.append(skill)
+            continue
+        for base in bases:
+            if base.is_symlink():
+                found.append(base)
+            elif base.is_dir():
+                dirs.append(base)
     for ctx in dirs:
         for directory, subdirs, files in os.walk(ctx):
             found += [p for p in (Path(directory) / n for n in subdirs + files) if p.is_symlink()]
