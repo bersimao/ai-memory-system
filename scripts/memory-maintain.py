@@ -143,6 +143,10 @@ def maintain(memory, mode, limit=40):
         else:
             sources = [*(ctx / 'memory').glob('*.md'), *(ctx / 'checkpoints').glob('*.md')]
         for path in sources:
+            # Distill/backfill ship the source to a model: a symlink here would send an
+            # outside file off the machine. The doctor reports what this skips.
+            if not memory.stored(path):
+                continue
             mtime = path.stat().st_mtime
             if mtime < horizon:
                 continue
@@ -152,8 +156,10 @@ def maintain(memory, mode, limit=40):
             # facts under different wording (fact markers hash the text).
             if mode == 'distill' and dt.date.fromtimestamp(mtime) >= today:
                 continue
-            if mode == 'backfill' and read(memory.path(str(ctx.relative_to(memory.root) / 'memory' / path.name))):
-                continue  # already logged: skip before reading, so its size is never reported
+            # Already logged: skip before reading, so its size is never reported. read_stored,
+            # not Memory.path: a symlinked log dir must fail that item below, not abort the run.
+            if mode == 'backfill' and memory.read_stored(ctx / 'memory' / path.name):
+                continue
             candidates.append((mtime, ctx, path))
     # Newest first across ALL stores. Alphabetical store order spent all 41 distill
     # transactions up to 2026-09-17 on one store and never reached the others.
@@ -162,7 +168,7 @@ def maintain(memory, mode, limit=40):
     for _, ctx, path in candidates:
         if processed >= limit:
             break
-        source = read(path)
+        source = memory.read_stored(path)
         if not source or len(source) > 180000:
             if source:
                 print('Skipped oversized source; split/review required: ' + str(path), file=sys.stderr)
@@ -181,7 +187,7 @@ def maintain(memory, mode, limit=40):
                 text = summary_markdown(obj['summary']) if isinstance(obj.get('summary'), str) else obj.get('summary')
                 if not isinstance(text, str) or not text.strip() or len(text) > 6000:
                     raise ValueError('invalid summary')
-                if read(path) != source:
+                if memory.read_stored(path) != source:
                     raise ValueError('source changed during extraction')
                 result = memory.apply({'version': VERSION, 'changes': [memory.change(target,
                     '<!-- candidate summary; source: ' + relative + '; revision: ' + digest(source) + ' -->\n' + redact(text) + '\n',
@@ -191,7 +197,7 @@ def maintain(memory, mode, limit=40):
                 facts = obj.get('facts')
                 if not isinstance(facts, list) or len(facts) > 12:
                     raise ValueError('invalid facts')
-                if read(path) != source:
+                if memory.read_stored(path) != source:
                     raise ValueError('source changed during extraction')
                 result = memory.facts(relative, facts)
         except Exception as exc:

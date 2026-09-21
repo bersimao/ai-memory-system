@@ -630,5 +630,102 @@ class IntegrationTests(unittest.TestCase):
         rerank.assert_not_called()
         backend.close.assert_called_once()
 
+    def test_store_reads_refuse_symlinks_anywhere_on_the_path(self):
+        import datetime as dt
+        doctor = module('doctor', BASE / 'scripts/memory-doctor.py')
+        tmp, ctx = Path(self.tmp.name), self.root / self.ctx
+        (tmp / 'outside.md').write_text('# s\nleaked canary\n')
+        (tmp / 'outdir').mkdir()
+        (tmp / 'outdir/x.md').write_text('# d\nleaked canary\n')
+        (tmp / 'outlogs').mkdir()
+        (tmp / 'outlogs' / (dt.date.today().isoformat() + '.md')).write_text('# l\nleaked canary\n')
+        (tmp / 'outstore/context').mkdir(parents=True)
+        (tmp / 'outstore/context/MEMORY.md').write_text('# e\nleaked canary\n')
+        yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat() + '.md'
+        before = (dt.date.today() - dt.timedelta(days=2)).isoformat() + '.md'
+        (ctx / 'MEMORY.md').unlink()
+        links = [(ctx / 'MEMORY.md', 'outside.md'), (ctx / 'topics', 'outdir'),
+                 (self.root / 'context/USER.md', 'outside.md'),
+                 (ctx / 'memory', 'outlogs'),
+                 (self.root / 'projects/clean/context/transcripts' / before, 'outside.md'),
+                 (self.root / 'projects/evil', 'outstore')]
+        for link, target in links:
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(tmp / target)
+        # Positive controls: real files with the same word ARE read.
+        atomic(self.root / 'context/MEMORY.md', '# Global\nreal canary\n')
+        atomic(self.root / 'projects/clean/context/transcripts' / yesterday, '# t\nreal canary\n')
+        atomic(ctx / 'transcripts' / yesterday, '# t\nlog dir is a link\n')  # its log is unwritable: skip, never abort
+        os.utime(tmp / 'outside.md', (0, dt.datetime.now().timestamp() - 86400))
+
+        snapshot = self.memory.snapshot(self.cwd)['text']
+        self.assertIn('real canary', snapshot)
+        self.assertNotIn('leaked', snapshot)
+        hits = self.memory.search('canary', self.cwd, scope='all', log=False)['results']
+        self.assertTrue(hits)
+        self.assertFalse([h['source'] for h in hits if not self.memory.stored(self.root / h['source'])])
+        with patch.object(maintain, 'generate', side_effect=ValueError('stop')) as generate:
+            failures = maintain.maintain(self.memory, 'backfill')
+        self.assertIn(self.ctx + '/transcripts/' + yesterday, failures)  # reported, not silent
+        sent = [call.args[1] for call in generate.call_args_list]
+        self.assertEqual(sent, ['# t\nreal canary\n'])
+        self.assertEqual(set(doctor.symlinks(self.root)), {link for link, _ in links})
+
+    def test_doctor_reports_symlinked_projects_dir(self):
+        doctor = module('doctor', BASE / 'scripts/memory-doctor.py')
+        real = Path(self.tmp.name) / 'real-projects'
+        (self.root / 'projects').rename(real)
+        (self.root / 'projects').symlink_to(real)
+        (self.root / 'context').mkdir(parents=True, exist_ok=True)
+        (self.root / 'context/USER.md').symlink_to(real / 'x.md')
+        atomic(real / self.rel.split('/', 1)[1].replace('MEMORY.md', 'topics/lost.md'), 'behind the link\n')
+        (real / self.rel.split('/', 1)[1].replace('MEMORY.md', 'inner.md')).symlink_to(real / 'x.md')  # seen only by walking through
+        self.assertEqual(doctor.orphans(self.root), [])  # hidden by the link: reported once, as a symlink
+        self.assertIsNone(self.memory.read_stored(self.root / self.rel))  # project memory hidden...
+        self.assertEqual(set(doctor.symlinks(self.root)),                 # ...so it must be reported
+                         {self.root / 'projects', self.root / 'context/USER.md'})
+        issues = doctor.diagnose(self.memory)['issues']                   # and the full run must not crash
+        self.assertIn({'type': 'symlink_in_store', 'path': str(self.root / 'projects')}, issues)
+
+    def test_doctor_never_reads_through_a_link(self):
+        doctor = module('doctor', BASE / 'scripts/memory-doctor.py')
+        big = Path(self.tmp.name) / 'big.md'
+        big.write_text('x' * 3000)
+        (self.root / self.rel).unlink()
+        (self.root / self.rel).symlink_to(big)
+        linked_ctx = Path(self.tmp.name) / 'linked-ctx'
+        linked_ctx.mkdir()
+        (linked_ctx / 'inner.md').symlink_to(big)  # reported only if the doctor walks through the link
+        (self.root / 'projects/other').mkdir()
+        (self.root / 'projects/other/context').symlink_to(linked_ctx)
+        self.assertEqual(set(doctor.symlinks(self.root)), {self.root / self.rel, self.root / 'projects/other/context'})
+        issues = doctor.diagnose(self.memory)['issues']
+        self.assertEqual([i for i in issues if i['type'] == 'over_cap'], [])  # a read through the link would flag 3000 > 2500
+        # Installed files are copies: a link to an identical file, or a path escaping the root, is drift.
+        (self.root / 'scripts').mkdir()
+        (self.root / 'scripts/tool.py').symlink_to(big)
+        json_write(self.memory.state / 'installation.json',
+                   {'files': {'scripts/tool.py': digest('x' * 3000), '../big.md': digest('x' * 3000)}})
+        drift = {i['path'] for i in doctor.diagnose(self.memory)['issues'] if i['type'] == 'installation_drift'}
+        self.assertEqual(drift, {'scripts/tool.py', '../big.md'})
+        self.assertIn({'type': 'symlink_in_store', 'path': str(self.root / self.rel)}, issues)
+
+    def test_doctor_flags_only_unreachable_pages(self):
+        doctor = module('doctor', BASE / 'scripts/memory-doctor.py')
+        ctx = self.root / self.ctx
+        atomic(self.memory.path(self.rel), '# Context\n- [a](topics/a.md)\n')
+        atomic(ctx / 'topics/a.md', 'see [[b]] and [[GLOBAL]]\n')
+        atomic(ctx / 'topics/b.md', 'reached through a\n')
+        atomic(ctx / 'topics/lost.md', 'nothing links here\n')
+        atomic(ctx / 'topics/archive/old.md', 'unindexed on purpose\n')
+        atomic(ctx / 'checkpoints/x.md', '[[orphan-by-checkpoint]]\n')
+        atomic(self.root / 'context/SATELLITE.md', 'no pointer in MEMORY.md\n')
+        atomic(self.root / 'context/GLOBAL.md', 'reached from a project page\n')
+        atomic(self.root / 'projects/other/context/MEMORY.md', '# Other\n')
+        atomic(self.root / 'projects/other/context/topics/b.md', 'same stem, other store\n')
+        found = {p.relative_to(self.root.resolve()).as_posix() for p in doctor.orphans(self.root)}
+        self.assertEqual(found, {self.ctx + '/topics/lost.md', 'context/SATELLITE.md',
+                                 'projects/other/context/topics/b.md'})
+
 if __name__ == '__main__':
     unittest.main()

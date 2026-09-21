@@ -63,7 +63,7 @@ async def search_scoped(memory, query, cwd, scope, domain, collection, limit):
             path = str(Path(hit['source']).resolve())
             if path not in allowed:
                 raise ValueError('backend returned a source outside the allowed scope')
-            text = read(path)
+            text = memory.read_stored(path)
             content = hit.get('content', '')
             # Never present old indexed text as current evidence.
             if text is None or not content or content not in text.replace('\r\n', '\n').replace('\r', '\n') or path in seen:

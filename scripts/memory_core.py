@@ -7,6 +7,7 @@ Models propose text. This module owns revisions, journals and filesystem writes.
 import argparse
 import contextlib
 import datetime as dt
+import errno
 import fcntl
 import hashlib
 import json
@@ -174,6 +175,34 @@ class Memory:
                 re.fullmatch(r'projects/[^/]+/context/(?:[^/]+\.md|(?:topics|memory|checkpoints)/.+\.md)', relative)):
             raise ValueError('writes are restricted to curated Markdown')
         return path
+
+    def stored(self, path):
+        """True when path lies under the root with no symlink between root and file.
+        A link anywhere on the way (file, topics/, context/, a project dir) could
+        point the read outside the store, even one aimed inside today."""
+        try:
+            parts = Path(path).relative_to(self.root).parts
+        except ValueError:
+            return False
+        return '..' not in parts and not any(self.root.joinpath(*parts[:i + 1]).is_symlink() for i in range(len(parts)))
+
+    def read_stored(self, path):
+        """Store-confined read for everything that reaches a model or the context:
+        None for anything outside the store or behind a symlink (the doctor reports those)."""
+        if not self.stored(path):
+            return None
+        # ponytail: parents are checked then opened (TOCTOU); only the final hop is atomic via
+        # O_NOFOLLOW. Closing it needs openat() per component; racing it needs store write access.
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                return None
+            raise
+        with os.fdopen(fd, 'rb') as stream:
+            return stream.read().decode('utf-8')
 
     @contextlib.contextmanager
     def lock(self):
@@ -343,7 +372,7 @@ class Memory:
             for path in sorted(root.rglob('*.md')):
                 if collection != 'transcripts' and 'transcripts' in path.relative_to(root).parts:
                     continue
-                if path.is_symlink() or not path.resolve().is_relative_to(self.root) or path in seen:
+                if not self.stored(path) or path in seen:
                     continue
                 seen.add(path)
                 yield path, project, kind
@@ -354,7 +383,7 @@ class Memory:
         hits = []
         if terms:
             for path, project, kind in self.documents(cwd, scope, domain, collection):
-                text = read(path)
+                text = self.read_stored(path)
                 if not text:
                     continue
                 # Complete headings/paragraphs retain source line numbers. Long
@@ -408,10 +437,10 @@ class Memory:
             hit = next((h for h in event['hits'] if h['id'] == result_id), None)
             if not hit:
                 raise ValueError('result does not belong to request')
-            source = (self.root / hit['source']).resolve()
-            if not source.is_relative_to(self.root):
+            source = self.root / hit['source']
+            if not self.stored(source):
                 raise ValueError('invalid source')
-            text = read(source)
+            text = self.read_stored(source)
             if text is None or digest(text) != hit['revision']:
                 raise ValueError('source changed; search again')
             self.event({'event': 'open', 'request_id': request_id, 'result_id': result_id, 'session': session or event.get('session')})
@@ -435,7 +464,7 @@ class Memory:
         ctx = self.root / store['relative'] / 'context'
         today = dt.date.today()
         candidates = [ctx / 'MEMORY.md', self.root / 'context/USER.md', self.root / 'context/MEMORY.md']
-        checkpoints = sorted((ctx / 'checkpoints').glob('*.md'), key=lambda p: p.stat().st_mtime, reverse=True)
+        checkpoints = sorted((ctx / 'checkpoints').glob('*.md'), key=lambda p: p.lstat().st_mtime, reverse=True)
         candidates.extend(checkpoints[:1])
         candidates.extend(ctx / 'memory' / ((today - dt.timedelta(days=i)).isoformat() + '.md') for i in range(2))
         manifest = {'version': VERSION, 'project': store['anchor'], 'included': [], 'omitted': []}
@@ -444,7 +473,7 @@ class Memory:
         output = bounded(prefix, 400)
         available = budget - len(output.encode()) - len(suffix.encode())
         for path in candidates:
-            text = read(path)
+            text = self.read_stored(path)
             if not text:
                 continue
             rel = str(path.relative_to(self.root))
