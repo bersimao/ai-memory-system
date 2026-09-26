@@ -31,7 +31,7 @@ def run():
     parser.add_argument('--session')
     args = parser.parse_args(sys.argv[2:])
     collection = {'memsearch_chunks': 'curated', 'memsearch_transcripts': 'transcripts'}.get(args.collection, args.collection)
-    if collection not in ('curated', 'transcripts') or not 1 <= args.top_k <= 50:
+    if collection not in ('curated', 'transcripts', 'checkpoints') or not 1 <= args.top_k <= 50:
         raise ValueError('invalid collection or result limit')
     if args.semantic:
         # Validate scope/domain before invoking optional dependencies.

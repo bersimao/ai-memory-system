@@ -57,6 +57,13 @@ MANIFEST=(
   scripts/llm-run
   scripts/skill-grep
   scripts/skill-grep.test.sh
+  scripts/memory-semantic-daemon.py
+  scripts/memory-semantic-daemon.test.py
+  scripts/memory-weekly-check.py
+  scripts/memory-weekly-check.test.py
+  # The weekly check drives it; its cases and runs stay private (release decision 2026-09-20).
+  scripts/mem-bench.py
+  scripts/mem-bench.test.py
 )
 
 # Repo-native files (they do not come from ~/.claude) the guard also scans.

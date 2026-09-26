@@ -2,6 +2,7 @@
 """Scoped semantic search adapter. Optional dependency isolated from the core."""
 import asyncio
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -53,6 +54,9 @@ async def search_scoped(memory, query, cwd, scope, domain, collection, limit):
         hits = ms._store.search(vectors[0], query_text=query, top_k=limit * 3, filter_expr=expression)
         if any(str(Path(hit['source']).resolve()) not in allowed for hit in hits):
             raise ValueError('backend returned a source outside the allowed scope')
+        # T0.2: the benchmark isolates the reranker's contribution without a reinstall.
+        if os.environ.get('MEMSEARCH_RERANKER') == 'off':
+            ms._reranker_model = None
         if ms._reranker_model and hits:
             hits = rerank(query, hits, model_name=ms._reranker_model, top_k=limit * 3)
         result = []

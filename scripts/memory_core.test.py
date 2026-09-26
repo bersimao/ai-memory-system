@@ -209,6 +209,21 @@ class Tests(unittest.TestCase):
         self.assertTrue(first['changed'])
         self.assertEqual(self.memory.facts(source, facts)['changed'], [])
 
+    def test_secret_flagged_fact_is_dropped_not_raised(self):
+        # A checkpoint ABOUT auth headers makes `redact` fire on prose, and raising
+        # failed the source every night for 35 days (a Node integration project, 2026-09-19).
+        source = self.ctx + '/memory/2026-09-18.md'
+        atomic(self.memory.path(source), 'O WMS exige o token em Authorization: Bearer <token>, '
+                                         'e aceitaria X-API-Token: <valor> no lugar.')
+        result = self.memory.facts(source, [
+            {'text': 'O WMS exige `Bearer <token>`.', 'quote': 'Authorization: Bearer <token>'},
+            {'text': 'A alternativa e um cabecalho proprio.', 'quote': 'aceitaria X-API-Token'},
+        ])
+        self.assertEqual(result['rejected'], 1)
+        learned = read(self.memory.path(next(p for p in result['changed'] if '/learned-' in p)))
+        self.assertIn('cabecalho proprio', learned)
+        self.assertNotIn('Bearer', learned)
+
     def test_evidence_revision_checked(self):
         source = self.ctx + '/topics/evidence.md'
         atomic(self.memory.path(source), 'evidence')
@@ -270,6 +285,43 @@ class Tests(unittest.TestCase):
         output = hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': 'Considering idempotency was solved, what next?', 'session_id': 's'})
         self.assertIn('Project: other', output)
         self.assertIn('request identifier', output)
+
+    def test_prompt_hook_floor_cue_snippet_and_recall_event(self):
+        # RAG plan T2.2.
+        rel = 'projects/other/context/topics/retry.md'
+        atomic(self.memory.path(rel), '# Retry\n' + 'filler line\n' * 20 + 'The idempotency key is persisted.\n')
+        self.memory.config['automatic_recall_scope'] = 'all'
+        ask = lambda prompt: hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': prompt, 'session_id': 's'})
+        output = ask('how is idempotency handled')
+        self.assertIn(rel + ':22\n', output)
+        self.assertNotIn('filler', output)
+        self.memory.config['recall_min_score'] = 1000
+        self.assertEqual(ask('how is idempotency handled'), '')
+        self.assertIn('not proof of absence', ask('remember how idempotency was handled?'))
+        self.assertIn('not proof of absence', ask('como era a idempotency antes?'))
+        self.assertEqual(ask('quais campos importantes e restantes na idempotency'), '')
+        self.memory.config.update({'recall_min_score': 0, 'recall_min_terms': 2})
+        self.assertEqual(ask('idempotency'), '')
+        self.assertIn('retry.md', ask('idempotency persisted'))
+        recalls = [e for e in map(json_read, (self.memory.state / 'usage').glob('*.json')) if e['event'] == 'recall']
+        self.assertEqual(sorted(e['skipped'] for e in recalls), [0, 0, 0, 1, 1, 1, 1])
+        self.assertTrue(all(isinstance(e['elapsed_ms'], int) for e in recalls))
+        self.assertEqual(sorted(e['injected_bytes'] == 0 for e in recalls), [False, False, False, False, True, True, True])
+
+    def test_min_terms_applies_before_the_limit(self):
+        # Codex review 2026-09-26: filtering after truncation let three one-term hits
+        # hide a valid two-term fourth hit and produced a false "no recall".
+        for name in ('a', 'b', 'c'):
+            atomic(self.memory.path('projects/other/context/topics/' + name + '.md'), 'quokkaflag ' * 5 + '\n')
+        two = 'projects/other/context/topics/two.md'
+        atomic(self.memory.path(two), 'zebracache quokkaflag ' + 'filler words here ' * 400 + '\n')
+        query = 'zebracache quokkaflag'
+        top = self.memory.search(query, self.cwd, 'all', limit=3)['results']
+        self.assertNotIn(two, [h['source'] for h in top])  # precondition: it really is hidden
+        self.assertEqual([h['source'] for h in self.memory.search(query, self.cwd, 'all', limit=3, min_terms=2)['results']], [two])
+        self.memory.config.update({'automatic_recall_scope': 'all', 'recall_min_terms': 2})
+        output = hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': query, 'session_id': 's'})
+        self.assertIn(two, output)
 
     def test_one_turn_checkpoint_despite_existing_daily_log(self):
         atomic(self.memory.path(self.ctx + '/memory/2026-09-12.md'), 'An earlier session')
@@ -385,7 +437,7 @@ class Tests(unittest.TestCase):
     def test_real_haiku_quotes_survive_markdown_and_elision(self):
         # Measured 2026-09-17 on real logs: haiku quoted faithfully but dropped
         # `code`/**bold** marks, rendered → as ->, and joined two passages with
-        # "...". Exact matching kept 0/13 facts from a GENNERA log and 1/12 from
+        # "...". Exact matching kept 0/13 facts from one client log and 1/12 from
         # claude-mem, so only markdown-free haiku summaries ever yielded facts.
         source = self.ctx + '/memory/2026-09-08.md'
         atomic(self.memory.path(source),
@@ -453,6 +505,95 @@ class Tests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'resets'):
                 maintain.maintain(self.memory, 'distill')
         self.assertEqual(gen.call_count, 1)
+
+
+class CheckpointCollectionTests(unittest.TestCase):
+    """Checkpoints left `curated` on 2026-09-20: conversation prose overlaps every query and
+    outranked curated pages (two absent benchmark queries moved 1.65/1.66 -> 3.30/3.07 in a
+    day, topped by checkpoints of the session that wrote them)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / 'store'
+        self.cwd = Path(self.tmp.name) / 'repo'
+        (self.cwd / '.git').mkdir(parents=True)
+        self.memory = Memory(self.root)
+        ctx = self.memory.resolve(self.cwd)['relative'] + '/context'
+        atomic(self.memory.path(ctx + '/MEMORY.md'), '# Context\nThe widget uses a lock.\n')
+        atomic(self.memory.path(ctx + '/checkpoints/a-b.md'), '# Chat\nThe widget uses a lock.\n')
+        # Transcripts are not a curated write, so the guard refuses memory.path() for them.
+        raw = self.root / ctx / 'transcripts' / '2026-01-01.md'
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        atomic(raw, '# Raw\nwidget lock\n')
+
+    def sources(self, collection):
+        return {str(p) for p, _project, _kind in
+                self.memory.documents(self.cwd, 'all', None, collection)}
+
+    def test_curated_excludes_checkpoints(self):
+        self.assertFalse([s for s in self.sources('curated') if 'checkpoints' in s])
+
+    def test_curated_still_has_the_real_page(self):
+        self.assertTrue([s for s in self.sources('curated') if s.endswith('MEMORY.md')])
+
+    def test_checkpoints_collection_returns_only_checkpoints(self):
+        found = self.sources('checkpoints')
+        self.assertTrue(found)
+        self.assertTrue(all('checkpoints' in s for s in found))
+
+    def test_checkpoints_collection_excludes_transcripts(self):
+        self.assertFalse([s for s in self.sources('checkpoints') if 'transcripts' in s])
+
+    def test_transcripts_collection_unaffected(self):
+        found = self.sources('transcripts')
+        self.assertTrue(all('transcripts' in s for s in found))
+
+    def test_unknown_collection_still_rejected(self):
+        with self.assertRaises(ValueError):
+            list(self.memory.documents(self.cwd, 'all', None, 'nonsense'))
+
+    def test_writing_a_checkpoint_still_allowed(self):
+        # The write path must keep working: only RETRIEVAL was demoted.
+        self.memory.checkpoint(self.cwd, 'sess', 'a decision and why', 'cursor-1')
+        written = self.sources('checkpoints')
+        self.assertTrue([s for s in written if 'a-b.md' not in s],
+                        'checkpoint() wrote nothing - the write path regressed')
+
+    def test_positive_control_curated_would_include_them_without_the_guard(self):
+        # Reverting the guard must make test_curated_excludes_checkpoints fail. Proven by
+        # asking the SAME question through the checkpoints collection: the file is there,
+        # indexable, and only the curated filter keeps it out.
+        self.assertTrue([s for s in self.sources('checkpoints') if 'checkpoints' in s],
+                        'fixture is empty - the exclusion test would pass vacuously')
+
+
+class IdfScoringTests(unittest.TestCase):
+    """RAG plan T2.1 (2026-09-21): a token present in most of the corpus must not weigh like a
+    rare one. Before IDF an off-topic query scored above real hits on 'sap'/'b1' alone."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / 'store'
+        self.cwd = Path(self.tmp.name) / 'repo'
+        (self.cwd / '.git').mkdir(parents=True)
+        self.memory = Memory(self.root)
+        ctx = self.memory.resolve(self.cwd)['relative'] + '/context'
+        for i in range(6):
+            atomic(self.memory.path(f'{ctx}/topics/filler{i}.md'), f'# Filler {i}\nsap b1 page {i}\n')
+        # Generic tokens repeated: wins on raw term frequency when every term weighs the same.
+        atomic(self.memory.path(ctx + '/topics/generic.md'), '# G\n' + 'sap b1 ' * 5 + '\n')
+        atomic(self.memory.path(ctx + '/topics/rare.md'), '# R\nzebra notes\n')
+
+    def test_rare_term_outranks_repeated_generic_terms(self):
+        top = self.memory.search('sap b1 zebra', self.cwd, log=False)['results'][0]
+        self.assertTrue(top['source'].endswith('rare.md'), top['source'])
+
+    def test_term_in_every_document_still_retrieves(self):
+        # The +1 inside the log keeps IDF positive: a term in every page must not zero out.
+        hits = self.memory.search('sap', self.cwd, log=False)['results']
+        self.assertTrue(hits and all(h['score'] > 0 for h in hits))
 
 
 class IntegrationTests(unittest.TestCase):

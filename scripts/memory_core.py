@@ -350,7 +350,7 @@ class Memory:
             return {'transaction': transaction, 'changed': [c['path'] for c in changes]}
 
     def roots(self, cwd, scope='project', domain=None, collection='curated'):
-        if scope not in ('all', 'project') or collection not in ('curated', 'transcripts'):
+        if scope not in ('all', 'project') or collection not in ('curated', 'transcripts', 'checkpoints'):
             raise ValueError('invalid retrieval scope or collection')
         if domain and not re.fullmatch(r'[a-zA-Z0-9_-]+', domain):
             raise ValueError('invalid domain')
@@ -359,6 +359,12 @@ class Memory:
         roots = []
         if collection == 'transcripts':
             roots.extend((p / 'transcripts', p.parent.name, 'transcript') for p in projects)
+        elif collection == 'checkpoints':
+            # Out of `curated` since 2026-09-20: checkpoints are conversation prose, so they
+            # overlap heavily with any query and outrank curated pages. Measured: two absent
+            # benchmark queries went 1.65/1.66 -> 3.30/3.07 in one day, topped by checkpoints
+            # of the very session that wrote them. Searchable, but only when asked for.
+            roots.extend((p / 'checkpoints', p.parent.name, 'checkpoint') for p in projects)
         else:
             roots.extend((p, p.parent.name, 'project') for p in projects)
             roots.append((self.root / 'context', 'shared', 'shared'))
@@ -370,45 +376,61 @@ class Memory:
         seen = set()
         for root, project, kind in self.roots(cwd, scope, domain, collection):
             for path in sorted(root.rglob('*.md')):
-                if collection != 'transcripts' and 'transcripts' in path.relative_to(root).parts:
+                parts = path.relative_to(root).parts
+                if collection != 'transcripts' and 'transcripts' in parts:
+                    continue
+                if collection != 'checkpoints' and 'checkpoints' in parts:
                     continue
                 if not self.stored(path) or path in seen:
                     continue
                 seen.add(path)
                 yield path, project, kind
 
-    def search(self, query, cwd, scope='project', domain=None, limit=5, session=None, collection='curated', log=True):
+    def search(self, query, cwd, scope='project', domain=None, limit=5, session=None, collection='curated', log=True, min_terms=1):
         started = time.monotonic()
         terms = set(tokens(query))
         hits = []
         if terms:
+            windows, df, n_docs = [], {}, 0
             for path, project, kind in self.documents(cwd, scope, domain, collection):
                 text = self.read_stored(path)
                 if not text:
                     continue
+                n_docs += 1
                 # Complete headings/paragraphs retain source line numbers. Long
                 # sections are found by matching windows, then read by source ID.
                 lines = text.splitlines()
+                in_doc = set()
                 for start in range(0, len(lines), 24):
                     content = '\n'.join(lines[start:start + 32])
                     words = tokens(content)
                     common = terms.intersection(words)
-                    if not common:
-                        continue
-                    score = sum(1 + math.log1p(words.count(w)) for w in common) / math.sqrt(max(1, len(words)) / 50)
-                    score *= len(common) / len(terms)
-                    if kind == 'knowledge':
-                        score *= 1.15
-                    rel = str(path.relative_to(self.root))
-                    hits.append({'id': digest(rel + ':' + str(start + 1) + ':' + digest(text))[:24],
-                                 'source': rel, 'project': project, 'kind': kind,
-                                 'line': start + 1, 'end_line': min(start + 32, len(lines)),
-                                 'revision': digest(text), 'score': round(score, 4),
-                                 'matched_terms': sorted(common), 'content': redact(content)})
+                    if common:
+                        in_doc |= common
+                        windows.append((path, project, kind, text, lines, start, content, words, common))
+                for w in in_doc:
+                    df[w] = df.get(w, 0) + 1
+            # IDF (BM25 form), RAG plan T2.1: without it a token in most of the corpus
+            # ("sap", "b1") weighed like a rare one, and an off-topic query scored 3.48 on
+            # those two alone, above real hits. Measured on the Stage 0 benchmark 2026-09-21.
+            idf = {w: math.log(1 + (n_docs - df.get(w, 0) + 0.5) / (df.get(w, 0) + 0.5)) for w in terms}
+            for path, project, kind, text, lines, start, content, words, common in windows:
+                score = sum(idf[w] * (1 + math.log1p(words.count(w))) for w in common) / math.sqrt(max(1, len(words)) / 50)
+                score *= len(common) / len(terms)
+                if kind == 'knowledge':
+                    score *= 1.15
+                rel = str(path.relative_to(self.root))
+                hits.append({'id': digest(rel + ':' + str(start + 1) + ':' + digest(text))[:24],
+                             'source': rel, 'project': project, 'kind': kind,
+                             'line': start + 1, 'end_line': min(start + 32, len(lines)),
+                             'revision': digest(text), 'score': round(score, 4),
+                             'matched_terms': sorted(common), 'content': redact(content)})
         hits.sort(key=lambda x: (-x['score'], x['source'], x['line']))
         selected, sources = [], set()
         for hit in hits:
-            if hit['source'] in sources:
+            # Before the limit: matched-term count does not follow score order, so
+            # filtering after truncation let one-term hits hide a valid later one.
+            if hit['source'] in sources or len(hit['matched_terms']) < min_terms:
                 continue
             selected.append(hit)
             sources.add(hit['source'])
@@ -522,6 +544,16 @@ class Memory:
             if not text or not quote_supported(quote, source) or len(text) > 4000:
                 rejected += 1
                 continue
+            # Same treatment for a fact that trips the secret heuristic: drop it, never
+            # fail the source. `redact` is content-agnostic, so a checkpoint ABOUT auth
+            # headers trips it on prose — `Bearer <token>`, `X-API-Token: <valor>` (the
+            # TOKEN rule is not left-anchored, so it matches inside a header name).
+            # Aborting there re-alerted every night for the 35 days the source stays
+            # eligible (a Node integration project, 2026-09-19). The check in `apply` stays
+            # as the backstop: nothing flagged is written either way.
+            if redact(text) != text or redact(quote) != quote:
+                rejected += 1
+                continue
             marker = '<!-- fact:' + digest(text) + ' -->'
             if marker in old + additions:
                 continue
@@ -562,7 +594,7 @@ def main():
     search.add_argument('--cwd', default=os.getcwd())
     search.add_argument('--scope', choices=['project', 'all'], default='project')
     search.add_argument('--domain')
-    search.add_argument('--collection', choices=['curated', 'transcripts'], default='curated')
+    search.add_argument('--collection', choices=['curated', 'transcripts', 'checkpoints'], default='curated')
     search.add_argument('--limit', '--top-k', '-k', type=int, default=5)
     search.add_argument('--session')
     expand = commands.add_parser('expand')

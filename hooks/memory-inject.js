@@ -43,7 +43,7 @@ const localDate = (d) => {
   return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}`;
 };
 
-const { storeDir, demandsFor, encodeProjectPath } = require('./project-store.js');
+const { storeDir, demandsFor, encodeProjectPath, resolveAnchor } = require('./project-store.js');
 
 const home = os.homedir();
 
@@ -57,6 +57,98 @@ const ctx = path.join(projectDir, 'context');
 
 // Auto-create on first use — no per-project init required.
 try { fs.mkdirSync(ctx, { recursive: true }); } catch {}
+
+// Collision detection. encodeProjectPath is many-to-one — '.', '/', '_', ' '
+// and ':' all collapse to '-' — so two anchors can land on ONE store and mix
+// their memory (~/x/a.b and ~/x/a/b; repos_local/X and repos-local/X). The
+// encoding is Claude Code's own and must NOT diverge: dirname(transcript_path)
+// is the only non-guessed store path there is, and a second encoding is what
+// split every store in two until 2026-07-09. So record the anchor and compare.
+//
+// WRITE-ONCE BY DESIGN. The first session records; no later session ever writes
+// this file again. That single rule removes every race: nothing to clobber,
+// nothing to repair, no temp file, no rename, no staleness window. 'wx' is
+// O_CREAT|O_EXCL, which neither follows a symlink nor truncates, so concurrent
+// first sessions produce one winner and the loser simply stays quiet — its next
+// session reads the winner's value and compares.
+//
+// The cost, accepted: a marker left empty by a crash between create and write
+// is never repaired, so that store stops reporting collisions. Quiet and
+// permanent beats a repair path that can overwrite real provenance.
+//
+// A stale marker does NOT need rewriting to stay correct: ask project-store.js
+// whether the recorded directory resolves to this anchor today. That is
+// read-only and symmetric, so pinning two colliding directories goes quiet from
+// either side, in any order, while an unrelated project that merely encodes to
+// the same store still resolves elsewhere and still warns.
+//
+// The marker gets exactly the trust every other file in this store gets — no
+// more, no less. MEMORY.md and the daily transcripts are read from this same
+// directory with a plain read() and injected verbatim, so anyone who could
+// plant a hostile .anchor already owns a larger channel. Hardening this one
+// path alone would buy nothing.
+const anchorMarker = () => {
+  const mark = path.join(ctx, '.anchor');
+  // Create it with its content already in place: fill a temp file, then link it
+  // in. A plain 'wx' write creates first and fills second, and a process killed
+  // in that window leaves an EMPTY marker that write-once would never repair —
+  // blinding this store for good. link() gives the marker no empty state to be
+  // caught in, and still fails EEXIST rather than replacing, so the first
+  // session wins and no later one overwrites. The temp name is random and 'wx',
+  // so a precreated symlink at a guessable name cannot redirect the write.
+  const tmp = `${mark}.${process.pid}.${require('crypto').randomBytes(8).toString('hex')}`;
+  try {
+    fs.writeFileSync(tmp, anchor.dir + '\n', { flag: 'wx' });
+    // AI_MEMORY_NO_HARDLINK=1 forces the no-hard-link branch below, so the
+    // fallback is exercised on Linux instead of only reasoned about.
+    if (process.env.AI_MEMORY_NO_HARDLINK === '1') { const x = new Error('EPERM'); x.code = 'EPERM'; throw x; }
+    fs.linkSync(tmp, mark);
+    return '';
+  } catch (e) {
+    // EEXIST: someone recorded it first — read and compare below. Anything else
+    // (a filesystem with no hard links) falls back to the plain create, where
+    // the empty window is back and, with no repair path, stays. Quiet and rare
+    // beats a repair that can overwrite real provenance.
+    if (e.code !== 'EEXIST') {
+      // No hard links here (some Windows and network mounts). A plain 'wx'
+      // write would create-then-fill, and a process killed in that window
+      // leaves an empty marker this design never repairs — silent for good,
+      // which is the worst outcome available. Rename is atomic on content, so
+      // instead guard it: only put the marker in place when there is none.
+      //
+      // The guard is racy by nature — two sessions can both see it absent and
+      // the second replaces the first. That is acceptable HERE and only here:
+      // neither session is destroying provenance, because there was none, and
+      // the loser's next session reads the winner's anchor and warns. A swapped
+      // but valid anchor still reports the collision; an empty marker reports
+      // nothing, ever. Once a marker exists this never replaces it.
+      try {
+        if (!fs.existsSync(mark)) fs.renameSync(tmp, mark);
+      } catch {}
+      return '';
+    }
+  } finally { try { fs.unlinkSync(tmp); } catch {} }
+  // Strip only the line terminator: trim() would corrupt a POSIX directory name
+  // that legitimately ends in a space, and then warn every session forever.
+  let prev = '';
+  try { prev = fs.readFileSync(mark, 'utf8').replace(/\r?\n$/, ''); } catch {}
+  if (!prev || prev === anchor.dir) return '';
+  if (resolveAnchor(prev).dir === anchor.dir) return '';
+  return 'Two different project directories encode to this one store:\n' +
+    `- recorded: \`${prev}\`\n` +
+    `- current:  \`${anchor.dir}\`\n` +
+    `- store:    \`${projectDir}\`\n` +
+    'Their memory is being MIXED — what is written here lands in the other ' +
+    "project's store, and its facts load as this project's.\n" +
+    'Tell the user before doing anything else. Two fixes, both theirs to pick:\n' +
+    '1. If these are genuinely ONE project, pin them:\n' +
+    `   \`node ~/.claude/hooks/project-store.js --pin <anchor> --for ${anchor.dir}\`\n` +
+    '2. If they are DIFFERENT projects, one directory must be renamed so the ' +
+    'encodings differ (the encoder cannot change — see above).\n' +
+    'Never split or merge the mixed store on your own: transcripts and daily ' +
+    'logs are datable, but MEMORY.md interleaves both projects and only the ' +
+    'user can say which fact belongs to which.';
+};
 
 // Rename detection: an empty store whose name closely matches a store with
 // content usually means the project directory was renamed — the old memory is
@@ -167,6 +259,9 @@ const add = (label, body) => { if (body) parts.push(`### ${label}\n${body}`); };
 // So: project-specific first, global last. Keeping the total under ~10KB is
 // still the actual fix (see cron/check-caps.sh) — this only decides what
 // survives when it is not.
+// Collision first: a rename means memory sits unread somewhere; a collision
+// means memory is being mixed. The worse one goes where truncation cannot reach it.
+add('Store collision — two anchors, one store', anchorMarker());
 add('Possible renamed project — orphaned store?', renameWarning());
 add('Project store anchor', anchorSection());
 
