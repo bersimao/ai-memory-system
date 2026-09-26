@@ -51,7 +51,9 @@ def summarize(rows, floor):
 def recall_stats(events, since):
     recalls = [e for e in events if e.get('event') == 'recall' and e.get('at', '') >= since]
     elapsed = [e['elapsed_ms'] for e in recalls if isinstance(e.get('elapsed_ms'), int)]
-    injected = sum(1 for e in recalls if e.get('injected_bytes'))
+    # hits, not injected_bytes: a cue prompt with nothing above the floor still
+    # injects the absence notice, which is not a recall.
+    injected = sum(1 for e in recalls if e.get('hits'))
     return {'recalls': len(recalls), 'injected': injected,
             'injection_rate': round(injected / len(recalls), 3) if recalls else None,
             'p50_ms': pct(elapsed, 0.5), 'p95_ms': pct(elapsed, 0.95)}
@@ -141,7 +143,7 @@ def main():
         if event.get('event') == 'recall' and event.get('at', '') >= since and search:
             top = max(search['hits'], key=lambda h: h['score'])
             recalls.append({'hash': search['query_hash'], 'top_score': top['score'], 'source': top['source'],
-                            'line': top['line'], 'terms': top.get('matched_terms', []), 'injected': bool(event.get('injected_bytes'))})
+                            'line': top['line'], 'terms': top.get('matched_terms', []), 'injected': bool(event.get('hits'))})
     picked = sample(recalls, floor, seed=int(today.replace('-', '')))
     prompts = prompts_by_hash(root, {r['hash'] for r in picked})
     sheet = weekly / (today + '-rotulos.md')

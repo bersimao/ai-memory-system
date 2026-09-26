@@ -34,12 +34,13 @@ class WeeklyCheckTests(unittest.TestCase):
         self.assertEqual((summary['recall@1'], summary['recall@5'], summary['absent_ok'], summary['errors']), (0.5, 0.5, 0.5, 1))
 
     def test_recall_stats_only_counts_the_window(self):
-        events = [{'event': 'recall', 'at': '2026-09-20', 'injected_bytes': 900, 'elapsed_ms': 5},
-                  {'event': 'recall', 'at': '2026-09-25', 'injected_bytes': 0, 'elapsed_ms': 100},
-                  {'event': 'recall', 'at': '2026-09-26', 'injected_bytes': 700, 'elapsed_ms': 300},
+        events = [{'event': 'recall', 'at': '2026-09-20', 'injected_bytes': 900, 'hits': ['a'], 'elapsed_ms': 5},
+                  {'event': 'recall', 'at': '2026-09-25', 'injected_bytes': 0, 'hits': [], 'elapsed_ms': 100},
+                  {'event': 'recall', 'at': '2026-09-26', 'injected_bytes': 700, 'hits': ['b'], 'elapsed_ms': 300},
+                  {'event': 'recall', 'at': '2026-09-26', 'injected_bytes': 260, 'hits': [], 'elapsed_ms': 50},  # absence notice
                   {'event': 'search', 'at': '2026-09-26'}]
         stats = weekly.recall_stats(events, '2026-09-21')
-        self.assertEqual((stats['recalls'], stats['injected'], stats['injection_rate']), (2, 1, 0.5))
+        self.assertEqual((stats['recalls'], stats['injected'], stats['injection_rate']), (3, 1, 0.333))
         self.assertEqual(stats['p95_ms'], 300)
 
     def test_sample_is_stratified_around_the_floor(self):
