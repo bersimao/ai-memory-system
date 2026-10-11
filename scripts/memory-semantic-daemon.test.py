@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from memory_core import Memory, atomic, digest, json_read
+from memory_core import Memory, atomic, digest, json_read, read
 
 
 def module(name, path):
@@ -37,6 +37,8 @@ class SemanticDaemonTests(unittest.TestCase):
         self.rel = 'projects/other/context/topics/retry.md'
         self.text = '# Retry\nA chave de idempotencia fica persistida.\n'
         atomic(self.memory.path(self.rel), self.text)
+        self.other = 'projects/other/context/topics/vizinho.md'
+        atomic(self.memory.path(self.other), 'Pagina que so o vetor acha.\n')
         self.calls = []
 
     async def fake_search(self, memory, query, cwd, scope, domain, collection, limit):
@@ -44,11 +46,18 @@ class SemanticDaemonTests(unittest.TestCase):
         return [{'id': 'h1', 'source': self.rel, 'project': 'other', 'kind': 'topic', 'line': 2,
                  'revision': digest(self.text), 'score': 0.9, 'content': 'A chave de idempotencia fica persistida.'}]
 
+    def fake_vectors(self, memory, query, cwd, scope, domain, collection, limit):
+        self.calls.append(('vector', query, limit))
+        text = read(self.memory.path(self.other))
+        return [{'id': 'v1', 'source': self.other, 'project': 'other', 'kind': 'topic', 'line': 1,
+                 'revision': digest(text), 'score': 0.0167, 'content': text.strip()}]
+
     def start(self, idle=5):
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(str(daemon.socket_path(self.memory)))
         server.listen(1)
-        thread = threading.Thread(target=daemon.serve, args=(self.memory, server, self.fake_search, idle))
+        thread = threading.Thread(target=daemon.serve, args=(self.memory, server, self.fake_search, idle),
+                                  kwargs={'vectors': self.fake_vectors})
         thread.start()
         self.addCleanup(thread.join)
         self.addCleanup(server.close)
@@ -102,6 +111,89 @@ class SemanticDaemonTests(unittest.TestCase):
         self.assertEqual(len(spawned), 1)
         self.assertTrue(spawned[0]['start_new_session'])
         self.assertEqual(spawned[0]['env']['AI_MEMORY_HOME'], str(self.root))
+
+    def test_hybrid_keeps_gate_hit_and_fills_from_vectors(self):
+        # 2026-09-28: lexical #1 opened the gate and stays first; a page only the vectors rank fills a slot,
+        # past the lexical floor, and stays expandable under the daemon's own request id.
+        self.memory.config.update({'automatic_recall_scope': 'all', 'recall_hybrid': True, 'recall_min_score': 0.5})
+        self.start(idle=1)
+        output = self.ask('a chave de idempotencia persistida')
+        self.assertIn('all, hybrid', output)
+        self.assertLess(output.index(self.rel), output.index(self.other))
+        self.assertIn('Engine: vector (hybrid fill)', output)
+        vector_id = output.split(self.other)[1].split('Expand: ')[1].split(':')[0]
+        self.assertIn('vetor', self.memory.expand(vector_id, 'v1')['content'])
+
+    def auto_page_of_another_project(self):
+        rel, text = 'projects/other/context/memory/2026-01-01.md', 'Chave persistida no log do dia.\n'
+        atomic(self.memory.path(rel), text)
+        return rel, {'id': 'v2', 'source': rel, 'project': 'other', 'kind': 'project', 'line': 1,
+                     'revision': digest(text), 'score': 0.016, 'content': text.strip()}
+
+    def test_hybrid_does_not_refill_a_page_the_cross_project_floor_dropped(self):
+        # 2026-10-11 (Codex stop review): the floor filtered the lexical hits only, so the vector ranking
+        # put the same daily log back as a fill slot.
+        log, hit = self.auto_page_of_another_project()
+        vectors = self.fake_vectors
+        self.fake_vectors = lambda *args: vectors(*args) + [hit]
+        self.memory.config.update({'automatic_recall_scope': 'all', 'recall_hybrid': True, 'recall_min_score': 0.5})
+        self.start(idle=1)
+        self.assertIn(log, self.ask('a chave de idempotencia persistida'))      # off by default
+        self.memory.config['recall_cross_auto_min_score'] = 1000
+        output = self.ask('a chave de idempotencia persistida')
+        self.assertNotIn(log, output)
+        self.assertIn(self.other, output)                                       # the other fill still arrives
+
+    def test_semantic_does_not_bring_back_a_page_the_cross_project_floor_dropped(self):
+        log, hit = self.auto_page_of_another_project()
+
+        async def found(*args):
+            return [hit]
+        self.fake_search = found
+        self.memory.config.update({'automatic_recall_scope': 'all', 'recall_semantic': True})
+        self.start(idle=1)
+        self.assertIn(log, self.ask('remember a chave persistida?'))            # off by default
+        self.memory.config['recall_cross_auto_min_score'] = 1000
+        output = self.ask('remember a chave persistida?')
+        self.assertNotIn(log, output)
+        self.assertIn(self.rel, output)
+
+    def test_hybrid_asks_nothing_when_the_gate_is_closed(self):
+        self.memory.config.update({'automatic_recall_scope': 'all', 'recall_hybrid': True, 'recall_min_score': 1000})
+        self.start(idle=1)
+        self.assertEqual(self.ask('a chave de idempotencia persistida'), '')
+        self.assertEqual(self.calls, [])
+
+    def test_hybrid_without_daemon_answers_lexically_and_starts_the_sqlite_engine(self):
+        self.memory.config.update({'automatic_recall_scope': 'all', 'recall_hybrid': True, 'recall_min_score': 0.5,
+                                   'semantic_engine': 'sqlite'})
+        real, spawned, asked = hooks.subprocess.Popen, [], []
+
+        def popen(args, **kwargs):
+            if 'memory-semantic-daemon.py' in str(args):
+                spawned.append(kwargs)
+                return None
+            return real(args, **kwargs)
+        with patch.object(hooks.importlib.util, 'find_spec', side_effect=lambda name: asked.append(name) or object()), \
+             patch.object(hooks.subprocess, 'Popen', side_effect=popen):
+            output = self.ask('a chave de idempotencia persistida')
+        self.assertIn('all, lexical', output)
+        self.assertIn(self.rel, output)
+        self.assertEqual((len(spawned), 'memsearch' in asked, 'onnxruntime' in asked), (1, False, True))
+
+    def test_hybrid_pick_keeps_lexical_first_then_fuses(self):
+        hit = lambda s: {'source': s}
+        picks = hooks.hybrid_pick([hit('A'), hit('B'), hit('C')], [hit('D'), hit('B'), hit('E')], 3)
+        # plain RRF would put B (both lists) over A (lexical #1 only)
+        self.assertEqual([(h['source'], v) for h, v in picks], [('A', False), ('B', False), ('D', True)])
+
+    def test_vector_mode_needs_sqlite_and_allows_a_deeper_limit(self):
+        request = {'query': 'x', 'cwd': str(self.cwd), 'mode': 'vector', 'limit': 30}
+        with self.assertRaisesRegex(ValueError, 'sqlite'):
+            daemon.answer(self.memory, request, self.fake_search)
+        self.assertEqual(daemon.answer(self.memory, request, self.fake_search, self.fake_vectors)['engine'], 'vector')
+        with self.assertRaisesRegex(ValueError, 'invalid'):
+            daemon.answer(self.memory, {**request, 'limit': 31}, self.fake_search, self.fake_vectors)
 
     def test_idle_daemon_exits(self):
         thread = self.start(idle=0.2)

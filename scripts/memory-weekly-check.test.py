@@ -33,6 +33,21 @@ class WeeklyCheckTests(unittest.TestCase):
         self.assertEqual(summary['absent_over_floor'], [('a1', 7.22)])
         self.assertEqual((summary['recall@1'], summary['recall@5'], summary['absent_ok'], summary['errors']), (0.5, 0.5, 0.5, 1))
 
+    def test_known_leak_is_listed_but_not_flagged(self):
+        # a09 (2026-09-28) is an accepted leak; flagging it every week would hide a new crossing.
+        rows = [{'id': 'a1', 'kind': 'absent', 'rank': None, 'top_score': 9.4, 'elapsed_ms': 20},
+                {'id': 'a2', 'kind': 'absent', 'rank': None, 'top_score': 7.5, 'elapsed_ms': 20}]
+        summary = weekly.summarize(rows, 7.42, known={'a1'})
+        self.assertEqual((summary['absent_over_floor'], summary['absent_over_floor_known']), ([('a2', 7.5)], [('a1', 9.4)]))
+        self.assertEqual(summary['absent_ok'], 0.0)  # the metric still counts both
+
+    def test_recall_drop_compares_shared_cases_only(self):
+        # 37 -> 60 cases (2026-09-28) would have read as recall@5 89% -> 84% with no real change.
+        hit = lambda i, rank: {'id': i, 'kind': 'prose', 'rank': rank, 'top_score': 9, 'elapsed_ms': 10}
+        old = [hit('h1', 1), hit('h2', 2)]
+        self.assertIsNone(weekly.recall_drop([hit('h1', 1), hit('h2', 2), hit('h3', None)], old))
+        self.assertEqual(weekly.recall_drop([hit('h1', 1), hit('h2', None), hit('h3', 1)], old), (1.0, 0.5, 2))
+
     def test_recall_stats_only_counts_the_window(self):
         events = [{'event': 'recall', 'at': '2026-09-20', 'injected_bytes': 900, 'hits': ['a'], 'elapsed_ms': 5},
                   {'event': 'recall', 'at': '2026-09-25', 'injected_bytes': 0, 'hits': [], 'elapsed_ms': 100},

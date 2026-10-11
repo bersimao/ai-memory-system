@@ -34,8 +34,10 @@ def pct(values, q):
     return values[min(len(values) - 1, int(len(values) * q))] if values else None
 
 
-def summarize(rows, floor):
-    """rows from mem-bench --json; absent cases pass when top_score stays under the floor."""
+def summarize(rows, floor, known=frozenset()):
+    """rows from mem-bench --json; absent cases pass when top_score stays under the floor.
+    `known`: cases marked `known_over_floor` in cases.jsonl - accepted leaks, listed apart so they
+    do not raise the alert every week and hide a new crossing (a09, 2026-09-28)."""
     hits = [r for r in rows if r['kind'] != 'absent' and not r.get('error')]
     absent = [r for r in rows if r['kind'] == 'absent' and not r.get('error')]
     ranked = lambda r: isinstance(r.get('rank'), int)
@@ -44,8 +46,17 @@ def summarize(rows, floor):
             'recall@1': round(sum(ranked(r) and r['rank'] == 1 for r in hits) / max(1, len(hits)), 3),
             'recall@5': round(sum(ranked(r) and r['rank'] <= 5 for r in hits) / max(1, len(hits)), 3),
             'absent_ok': round((len(absent) - len(over)) / max(1, len(absent)), 3),
-            'absent_over_floor': over,
+            'absent_over_floor': [c for c in over if c[0] not in known],
+            'absent_over_floor_known': [c for c in over if c[0] in known],
             'p50_ms': pct([r['elapsed_ms'] for r in rows if r.get('elapsed_ms') is not None], 0.5)}
+
+
+def recall_drop(rows, old_rows):
+    """(old, new, n) when recall@5 fell on the cases both runs share, else None. Comparing whole
+    runs read added harder cases as a regression (37 -> 60 cases, 2026-09-28: 89% -> 84%)."""
+    common = {r['id'] for r in rows} & {r['id'] for r in old_rows}
+    new, old = (summarize([r for r in x if r['id'] in common], 0)['recall@5'] for x in (rows, old_rows))
+    return (old, new, len(common)) if new < old else None
 
 
 def recall_stats(events, since):
@@ -127,11 +138,18 @@ def main():
     previous = sorted(p for p in weekly.glob('*.json') if p.name < run.name)
     bench = subprocess.run([sys.executable, str(root / 'scripts/mem-bench.py'), '--modes', 'lexical', '--include-held-out',
                             '--floor', str(floor), '--json', str(run)], capture_output=True, text=True, timeout=1800)
+    cases = memory.state / 'bench' / 'cases.jsonl'
+    known = {c['id'] for c in map(json.loads, filter(str.strip, cases.read_text(encoding='utf-8').splitlines()))
+             if c.get('known_over_floor')} if cases.is_file() else set()
+    drop = None
     if bench.returncode != 0 or not run.is_file():
         summary, before = {'error': (bench.stderr or bench.stdout)[-500:]}, None
     else:
-        summary = summarize(json_read(run)['rows'], floor)
-        before = summarize(json_read(previous[-1])['rows'], floor) if previous else None
+        rows = json_read(run)['rows']
+        summary = summarize(rows, floor, known)
+        old_rows = json_read(previous[-1])['rows'] if previous else None
+        before = summarize(old_rows, floor, known) if old_rows else None
+        drop = recall_drop(rows, old_rows) if old_rows else None
 
     events = [json_read(p) for p in (memory.state / 'usage').glob('*.json')]
     since = (now - timedelta(days=7)).astimezone(timezone.utc).isoformat()
@@ -170,8 +188,8 @@ def main():
     else:
         if summary['absent_over_floor']:
             findings.append('casos ausentes acima do piso %.2f: %s' % (floor, ', '.join('%s=%.2f' % c for c in summary['absent_over_floor'])))
-        if before and summary['recall@5'] < before['recall@5']:
-            findings.append('recall@5 caiu de %.0f%% para %.0f%%' % (before['recall@5'] * 100, summary['recall@5'] * 100))
+        if drop:
+            findings.append('recall@5 caiu de %.0f%% para %.0f%% nos %d casos em comum' % (drop[0] * 100, drop[1] * 100, drop[2]))
     env = read_env(root / 'data/memory.env')
     if not env.get('CLAUDE_MEM_INBOX'):
         print(report)

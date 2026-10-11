@@ -23,17 +23,25 @@ Codex may require reviewing the exact new hook definitions in `/hooks`.
 
 Without `--yes` the installer only previews, and nothing is written.
 
-Optional: add `--semantic-updates` when memsearch is already configured. Accepted
-writes then trigger a detached, locked indexing worker; failed updates remain queued.
 The default lexical engine reads current files and needs neither embeddings nor a model.
-Without memsearch installed, the maintenance jobs skip semantic indexing and keep
-the pending updates queued, so installing memsearch later catches up.
+Semantic search (`mem search --semantic`) is optional and the installer does not set it up:
+
+```sh
+pip install onnxruntime tokenizers numpy huggingface_hub
+python3 -c "from huggingface_hub import snapshot_download; snapshot_download('gpahal/bge-m3-onnx-int8', allow_patterns=['model_quantized.onnx', 'tokenizer.json'])"
+python3 ~/.claude/scripts/memory-index.py --collection curated   # first build; resumes if interrupted
+```
+
+The model is about 560 MB and the memory code never downloads it by itself. Vectors live
+in `data/memory-system/index.sqlite`, next to the lexical index. `memory-doctor.py` reports
+`"semantic": "ready"` when the modules and the model are in place. Earlier releases used
+memsearch (Milvus) for this; it is no longer used and `--semantic-updates` is gone.
 
 The installer never creates schedules, and existing ones are preserved. To schedule
 maintenance, add entries yourself, for example with `crontab -e`:
 
 ```cron
-30 3 * * *  $HOME/.claude/cron/distill.sh   # daily: transcripts, extraction, index
+30 3 * * *  $HOME/.claude/cron/distill.sh   # daily: transcripts, extraction
 0  4 * * 0  $HOME/.claude/cron/curate.sh    # weekly: lossless index splitting
 ```
 
@@ -41,12 +49,11 @@ Use your `--root` path if it differs; the cron wrappers and the `mem` CLI derive
 memory root from their own location (an explicit `AI_MEMORY_HOME` still wins).
 `distill.sh` exits non-zero when maintenance fails, so cron and systemd see the failure.
 
-Keep periodic `cron/memsearch-index.sh` reconciliation if you use memsearch. memsearch
-keeps one local vector database per user account (`~/.memsearch/milvus.db` by
-default), and its indexer prunes every source it isn't handed, so two roots can't
-share it. The first root to use it claims it in `milvus.db.owner-root`; any other root
-skips semantic indexing and search and keeps lexical retrieval. To move ownership,
-delete that file.
+If you use semantic search, also schedule `cron/memsearch-index.sh` daily (the name is
+historical): it re-chunks changed pages and embeds what has no vector yet. Each
+collection is capped at 2 hours per run, which fits a daily delta but not a first build
+of a large store, so do the first build by hand as shown above. The index belongs to its
+memory root, so two roots never share one.
 
 Nothing in the release commits or pushes anything. `distill.sh` runs
 `cron/backup-push.sh` after maintenance only if you put an executable script there
@@ -57,9 +64,6 @@ yourself; the installer does not create one.
   must be Claude Code's own config directory (the default `~/.claude`, or wherever
   `CLAUDE_CONFIG_DIR` points). Codex sessions are always read from `~/.codex/sessions`,
   even if you install with a different `--codex-home`.
-- The ownership claim covers a local memsearch database only. With a remote Milvus
-  server, give each root its own server or database; two roots sharing one would
-  prune each other's sources.
 
 Background extraction defaults to tool-free Claude CLI; see [runtime design](docs/model-agnostic.md).
 

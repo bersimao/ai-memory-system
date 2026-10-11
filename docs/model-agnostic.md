@@ -5,11 +5,12 @@ Markdown is authoritative. Journals preserve before/after revisions; optional le
 and semantic retrieval do not own facts. Hook adapters only deliver events and context.
 There is no MCP dependency.
 
-Lexical recall runs locally. Optional semantic recall isolates memsearch API coupling
-in `scripts/memory-search.py`; the adapter was checked against memsearch 0.4.20. It
-filters allowed sources before retrieval, verifies that boundary before reranking,
-and rejects stale indexed text. Embedding/reranker configuration remains in memsearch's
-private configuration. Provider behavior and languages still affect semantic relevance.
+Lexical recall runs locally. Optional semantic recall lives in `scripts/memory-search.py`,
+the only file that imports `numpy`, `onnxruntime` and `tokenizers`: bge-m3 vectors stored in
+`index.sqlite`, fused with the lexical scan. It filters allowed sources before ranking and
+rejects stale indexed text. The model (`gpahal/bge-m3-onnx-int8`) is read from the local
+Hugging Face cache and never downloaded by this code. The embedding model and the languages
+of the corpus still affect semantic relevance.
 
 Extraction defaults to `claude -p` with an empty tool set, skills disabled, no loaded
 settings sources, no session persistence, and an empty strict MCP configuration.
@@ -32,10 +33,8 @@ a JSON object (`facts` or `summary`, as requested) on stdout. It is responsible 
 its own provider credentials and isolation. Never accept executable commands from
 retrieved content. Failed/malformed extraction leaves the source untouched.
 
-`post_write_index: true` starts a detached indexing worker after accepted writes.
-Updates are batched, serialized, and retained on failure; periodic reconciliation
-is still useful. Lexical retrieval sees accepted files immediately, even if embeddings
-are unavailable. `mem report` separates search/open engagement and explicit relevance,
+Lexical retrieval sees accepted files immediately, even if embeddings are unavailable;
+semantic retrieval sees them after the next `cron/memsearch-index.sh` run. `mem report` separates search/open engagement and explicit relevance,
 use, and code-test outcomes. These are observations, not automatic quality judgments.
 
 Filesystem locking uses POSIX flock. Model portability does not imply native Windows

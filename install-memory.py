@@ -40,7 +40,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', default=os.environ.get('CLAUDE_HOME', str(Path.home() / '.claude')))
     parser.add_argument('--codex-home')
-    parser.add_argument('--semantic-updates', action='store_true')
     parser.add_argument('--scope', choices=['project', 'all'], default='project')
     parser.add_argument('--yes', '-y', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
@@ -53,7 +52,8 @@ def main():
         sys.exit('missing dependency: ' + ', '.join(missing) + ' (install it and re-run)')
     root = Path(args.root).expanduser().resolve()
     codex = Path(args.codex_home).expanduser().resolve() if args.codex_home else None
-    manifest = re.search(r'^MANIFEST=\(\n(.*?)\n\)', (HERE / 'sync-release.sh').read_text(), re.M | re.S).group(1).split()
+    manifest = re.search(r'^MANIFEST=\(\n(.*?)\n\)', (HERE / 'sync-release.sh').read_text(), re.M | re.S).group(1)
+    manifest = [name for line in manifest.splitlines() for name in line.split('#')[0].split()]  # bash comments are not files
     if any(not (HERE / name).is_file() for name in manifest):
         raise ValueError('release contains missing mechanism files')
     body = (HERE / 'docs/memory-instructions.md').read_text().split('\n---\n', 1)[1].replace('~/.claude', str(root))
@@ -90,8 +90,6 @@ def main():
             if target.suffix in ('.sh', '.py') or target.name in ('mem', 'skill-grep', 'llm-run'):
                 target.chmod(0o755)
         command = ['python3', str(HERE / 'configure-memory.py'), '--root', str(root), '--scope', args.scope]
-        if args.semantic_updates:
-            command += ['--semantic-updates']
         if codex:
             command += ['--codex-home', str(codex)]
         subprocess.run(command, check=True)

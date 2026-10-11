@@ -7,8 +7,8 @@ never imports memory_core and the tests can point MEM_BIN at a stub.
 
 Modes:
   lexical             plain `mem search`
-  semantic            `mem search --semantic`
-  semantic-norerank   same, with MEMSEARCH_RERANKER=off (honoured by memory-search.py)
+  semantic            `mem search --semantic` (`semantic-sqlite` is the same mode: the name the
+                      runs carried while memsearch was still a second engine)
 
 Calibration rule: derive thresholds from the DEFAULT run (held-out cases excluded).
 --include-held-out is for reporting only; tuning on it contaminates the holdout.
@@ -30,7 +30,7 @@ import time
 
 HOME = pathlib.Path(os.environ.get('AI_MEMORY_HOME', pathlib.Path.home() / '.claude'))
 BENCH = HOME / 'data/memory-system/bench'
-MODES = ('lexical', 'semantic', 'semantic-norerank')
+MODES = ('lexical', 'semantic', 'semantic-sqlite')
 
 
 def mem_bin():
@@ -44,13 +44,10 @@ def run_case(case, mode, k, timeout):
         cmd.append('--semantic')
     if case.get('cwd'):
         cmd += ['--cwd', case['cwd']]
-    env = dict(os.environ)
-    if mode == 'semantic-norerank':
-        env['MEMSEARCH_RERANKER'] = 'off'
 
     started = time.monotonic()
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         payload = json.loads(proc.stdout) if proc.stdout.strip() else {}
         error = None if proc.returncode == 0 else f'exit {proc.returncode}: {proc.stderr.strip()[:200]}'
     except subprocess.TimeoutExpired:
@@ -65,8 +62,10 @@ def run_case(case, mode, k, timeout):
     sources = [str(r.get('source', '')) for r in results]
     rank = None
     if case.get('expected'):
+        # expected_any: real long prompts have more than one right page (2026-09-28).
+        wanted = case.get('expected_any') or [case['expected']]
         for i, src in enumerate(sources, 1):
-            if src == case['expected'] or case['expected'].startswith(src) or src.startswith(case['expected']):
+            if any(src == e or e.startswith(src) or src.startswith(e) for e in wanted):
                 rank = i
                 break
     scores = [float(r.get('score', 0) or 0) for r in results]
@@ -138,6 +137,11 @@ def main(argv=None):
     cases = [json.loads(l) for l in open(args.cases) if l.strip()]
     if not args.include_held_out:
         cases = [c for c in cases if not c.get('held_out')]
+
+    # Untimed warm-up: the first search after a boot pays for a cold page cache, and the
+    # weekly check once ran 2 min after boot and reported p50 3x too high (2026-10-10).
+    if cases:
+        run_case(cases[0], modes[0], args.k, args.timeout)
 
     by_mode = {}
     for mode in modes:

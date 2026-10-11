@@ -37,8 +37,6 @@ elif "kubernetes" in q.lower():
 else:
     results = []
 engine = "semantic" if "--semantic" in sys.argv else "lexical"
-if os.environ.get("MEMSEARCH_RERANKER") == "off":
-    engine += "-norerank"
 print(json.dumps({"results": results, "elapsed_ms": 12, "engine": engine,
                   "scope": "all", "collection": "curated"}))
 '''
@@ -85,14 +83,22 @@ class Bench(unittest.TestCase):
         self.assertIsNone(r['rank'])
         self.assertLess(r['top_score'], 1.0)
 
+    def test_expected_any_accepts_each_listed_page(self):
+        # Real long prompts (2026-09-28) have more than one right page.
+        case = {'id': 't4', 'query': 'matrix cells', 'lang': 'en', 'kind': 'prose', 'held_out': False,
+                'expected': 'skills/x/none.md',
+                'expected_any': ['skills/x/none.md', 'skills/di/references/reference-matrix-cell-read.md']}
+        self.assertEqual(self.bench.run_case(case, 'lexical', 5, 30)['rank'], 2)
+
     def test_held_out_is_excluded_by_default(self):
         ids = [r['id'] for r in self.rows(include_held_out=False)]
         self.assertEqual(ids, ['t1', 't3'])
 
-    def test_norerank_mode_sets_the_env_var(self):
-        # Proves the mode actually reaches the subprocess, not just the row label.
-        self.assertEqual(self.rows('semantic-norerank')[0]['engine'], 'semantic-norerank')
+    def test_semantic_modes_reach_the_subprocess(self):
+        # Proves the flag actually reaches the subprocess, not just the row label.
         self.assertEqual(self.rows('semantic')[0]['engine'], 'semantic')
+        self.assertEqual(self.rows('semantic-sqlite')[0]['engine'], 'semantic')
+        self.assertEqual(self.rows('lexical')[0]['engine'], 'lexical')
 
     def test_summary_counts(self):
         s = self.bench.summarise(self.rows(), floor=1.0)
@@ -119,6 +125,18 @@ class Bench(unittest.TestCase):
         payload = json.loads(out.read_text())
         self.assertEqual(len(payload['rows']), 3)
         self.assertEqual({r['id'] for r in payload['rows']}, {'t1', 't2', 't3'})
+
+    def test_warm_up_runs_once_and_is_not_a_row(self):
+        out = pathlib.Path(self.tmp.name) / 'warm.json'
+        real, seen = self.bench.run_case, []
+        self.bench.run_case = lambda c, *a: (seen.append(c['id']), real(c, *a))[1]
+        try:
+            self.bench.main(['--cases', str(self.cases), '--modes', 'lexical',
+                             '--include-held-out', '--json', str(out)])
+        finally:
+            self.bench.run_case = real
+        self.assertEqual(seen, ['t1', 't1', 't2', 't3'])
+        self.assertEqual(len(json.loads(out.read_text())['rows']), 3)
 
     def test_bad_json_from_mem_is_recorded_not_raised(self):
         broken = pathlib.Path(self.tmp.name) / 'broken.py'

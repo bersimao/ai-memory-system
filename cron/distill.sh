@@ -17,7 +17,6 @@ maintain() {
   python3 "$root/cron/jsonl-to-transcript.py" || return 1
   python3 "$root/scripts/memory-maintain.py" backfill "$@" || return 1
   python3 "$root/scripts/memory-maintain.py" distill "$@" || return 1
-  python3 "$root/scripts/memory-maintain.py" index || return 1
 }
 
 # A failure must be loud and must not cost the backup. Until 2026-09-14 every step

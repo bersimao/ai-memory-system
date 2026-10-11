@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Read-only installation/corpus health. No network and no model invocation."""
-import importlib.metadata
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -103,10 +103,14 @@ def diagnose(memory):
         if shutil.which(executable):
             p = subprocess.run([executable, '--version'], text=True, capture_output=True, timeout=10)
             report['runtime'][executable] = p.stdout.strip()
-    try:
-        report['runtime']['memsearch'] = importlib.metadata.version('memsearch')
-    except importlib.metadata.PackageNotFoundError:
-        report['runtime']['memsearch'] = 'not installed (lexical recall works)'
+    # Semantic recall is optional: lexical works without it. Say what a fresh machine is missing.
+    missing = [m for m in ('onnxruntime', 'tokenizers', 'numpy') if importlib.util.find_spec(m) is None]
+    # Same choice as memory-search.py's Embedder: the LAST snapshot, which needs the tokenizer and a model file.
+    snaps = sorted((Path.home() / '.cache/huggingface/hub/models--gpahal--bge-m3-onnx-int8/snapshots').glob('*/'))
+    usable = snaps and (snaps[-1] / 'tokenizer.json').is_file() and any(
+        (snaps[-1] / name).is_file() for name in ('model_quantized.onnx', 'model.onnx'))
+    report['runtime']['semantic'] = ('missing modules: ' + ', '.join(missing) if missing else 'ready' if usable else
+                                     'embedding model not on disk (`mem search <query> --semantic` prints the fetch command)')
     for path in sorted((CODE / 'scripts').glob('memory*.py')):
         report['files'][str(path.relative_to(CODE))] = 'symlink (not read)' if path.is_symlink() else digest(read(path))
     projects = [ctx for ctx in contexts(memory.root)[1] if ctx.parent != memory.root]
@@ -134,7 +138,6 @@ def diagnose(memory):
         current = memory.read_stored(memory.root / relative)
         if current is None or digest(current) != expected:
             report['issues'].append({'type': 'installation_drift', 'path': relative})
-    report['pending_semantic_updates'] = len(list((memory.state / 'dirty').glob('*.json')))
     return report
 
 

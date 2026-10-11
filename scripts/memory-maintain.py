@@ -214,54 +214,14 @@ def maintain(memory, mode, limit=40):
     return failures
 
 
-def reindex(memory):
-    import fcntl
-    import importlib.util
-    # Semantic search is optional. A lexical-only install still writes dirty
-    # receipts on every accepted write; without this gate the nightly index step
-    # failed on the memsearch import and every maintenance run alerted. Receipts
-    # stay queued (one per path, overwritten), so installing memsearch later
-    # indexes them on the next run.
-    if importlib.util.find_spec('memsearch') is None:
-        print('memsearch not installed; semantic indexing skipped (lexical search unaffected).')
-        return 0
-    from memory_core import semantic_db_owned_by
-    if not semantic_db_owned_by(memory.root):
-        print('semantic DB belongs to another memory root; indexing skipped (lexical search unaffected).')
-        return 0
-    memory.state.mkdir(parents=True, exist_ok=True)
-    with (memory.state / 'index.lock').open('a') as lock:
-        # Wait in this detached worker. Returning on contention would strand
-        # receipts when the lock holder is a search or full reconciliation.
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        while True:
-            receipts = sorted((memory.state / 'dirty').glob('*.json'))[:100]
-            if not receipts:
-                return 0
-            batch = [(receipt, json_read(receipt)) for receipt in receipts]
-            before = {item['path']: read(memory.path(item['path'])) for _, item in batch}
-            result = subprocess.run([sys.executable, str(Path(__file__).with_name('memory-index.py')), '--root', str(memory.root),
-                                    *[str(memory.path(item['path'])) for _, item in batch]],
-                                    capture_output=True, text=True, timeout=300)
-            if result.returncode:
-                print('Semantic indexing failed; pending receipts retained.', file=sys.stderr)
-                return 1
-            with memory.lock():
-                for receipt, item in batch:
-                    if before[item['path']] == read(memory.path(item['path'])) and json_read(receipt, {}) == item:
-                        receipt.unlink()
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['distill', 'backfill', 'curate', 'index'])
+    parser.add_argument('mode', choices=['distill', 'backfill', 'curate'])
     parser.add_argument('--root')
     parser.add_argument('--limit', type=int, default=40)
     args = parser.parse_args()
     memory = Memory(args.root)
     try:
-        if args.mode == 'index':
-            sys.exit(reindex(memory))
         failures = maintain(memory, args.mode, args.limit)
         if failures:
             # Every other source was processed; still fail so distill.sh alerts.

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import importlib.util
+import io
+from contextlib import redirect_stdout
 import json
 import os
 from pathlib import Path
@@ -26,18 +28,6 @@ maintain = module('maintain', BASE / 'scripts/memory-maintain.py')
 
 
 import memory_core
-_REAL_OWNER_CHECK = memory_core.semantic_db_owned_by
-_owner_patch = patch('memory_core.semantic_db_owned_by', return_value=True)
-
-
-def setUpModule():
-    # The real check claims <memsearch DB>.owner-root. On a machine with memsearch
-    # installed, a test reaching it would hand the user's live DB to a temp root.
-    _owner_patch.start()
-
-
-def tearDownModule():
-    _owner_patch.stop()
 
 
 class Tests(unittest.TestCase):
@@ -122,17 +112,6 @@ class Tests(unittest.TestCase):
             self.assertNotIn(leak, redact(quoted), quoted)
         self.assertIn('tail', redact('DB_PASS="alpha beta" tail'))
 
-    def test_semantic_db_has_one_owner_root(self):
-        db = Path(self.tmp.name) / 'ms' / 'milvus.db'
-        config = types.SimpleNamespace(resolve_config=lambda: types.SimpleNamespace(milvus=types.SimpleNamespace(uri=str(db))))
-        with patch.dict(sys.modules, {'memsearch': types.SimpleNamespace(), 'memsearch.config': config}):
-            self.assertTrue(_REAL_OWNER_CHECK(self.root))
-            self.assertFalse(_REAL_OWNER_CHECK(Path(self.tmp.name) / 'other-root'))
-            self.assertTrue(_REAL_OWNER_CHECK(self.root))
-        remote = types.SimpleNamespace(resolve_config=lambda: types.SimpleNamespace(milvus=types.SimpleNamespace(uri='http://milvus:19530')))
-        with patch.dict(sys.modules, {'memsearch': types.SimpleNamespace(), 'memsearch.config': remote}):
-            self.assertTrue(_REAL_OWNER_CHECK(Path(self.tmp.name) / 'other-root'))
-
     def test_mem_wrapper_uses_its_own_root_even_via_symlink(self):
         root = Path(self.tmp.name) / 'custom-root'
         (root / 'scripts').mkdir(parents=True)
@@ -156,7 +135,6 @@ class Tests(unittest.TestCase):
             self.memory._recover()
         self.assertEqual(read(self.memory.path(self.rel)), old + 'new')
         self.assertEqual(json_read(journal)['status'], 'committed')
-        self.assertEqual(len(list((self.memory.state / 'dirty').glob('*'))), 1)
 
     def test_recovery_does_not_clobber_external_edit(self):
         change = self.memory.change(self.rel, read(self.memory.path(self.rel)) + 'new')
@@ -308,6 +286,159 @@ class Tests(unittest.TestCase):
         self.assertTrue(all(isinstance(e['elapsed_ms'], int) for e in recalls))
         self.assertEqual(sorted(e['injected_bytes'] == 0 for e in recalls), [False, False, False, False, True, True, True])
 
+    def test_prompt_hook_skips_task_notices_and_two_plain_words(self):
+        # 2026-10-10, logged traffic: harness notices and two-word replies opened the gate on noise.
+        atomic(self.memory.path('projects/other/context/topics/deploy.md'),
+               'Commit and push before the deploy; ticket 85789 completed, status ok.\n')
+        self.memory.config.update({'automatic_recall_scope': 'all', 'recall_min_terms': 2})
+        ask = lambda prompt: hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': prompt, 'session_id': 's'})
+        self.assertEqual(ask('<task-notification>\n<status>completed</status>'), '')
+        self.assertIn('deploy.md', ask('status completed'))      # the same words, typed, still recall
+        self.assertIn('deploy.md', ask('commit and push'))       # off by default
+        self.memory.config['recall_plain_terms'] = 3
+        self.assertEqual(ask('commit and push'), '')
+        self.assertIn('deploy.md', ask('commit push deploy'))
+        self.assertIn('deploy.md', ask('ticket 85789'))          # an identifier keeps a two-word match
+
+    def test_prompt_hook_floors_another_projects_auto_pages(self):
+        # 2026-10-10: 87 logged openers judged against the injected text; under 10, 1 of 51 helped.
+        pages = {'projects/other/context/memory/2026-01-01.md': 'zebra quokka lemur',
+                 'projects/other/context/topics/learned-2026-01.md': 'falcon heron osprey',
+                 'projects/other/context/topics/birds.md': 'penguin puffin albatross',
+                 self.ctx + '/memory/2026-01-01.md': 'walrus narwhal beluga'}
+        for rel, words in pages.items():
+            atomic(self.memory.path(rel), words + ' notes\n')
+        self.memory.config['automatic_recall_scope'] = 'all'
+        ask = lambda prompt: hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': prompt, 'session_id': 's'})
+        seen = lambda: [rel in ask(words) for rel, words in pages.items()]
+        self.assertEqual(seen(), [True, True, True, True])       # off by default
+        self.memory.config['recall_cross_auto_min_score'] = 1000
+        self.assertEqual(seen(), [False, False, True, True])     # a curated topic and the own daily log stay
+        self.memory.config['recall_cross_auto_min_score'] = 0.01
+        self.assertEqual(seen(), [True, True, True, True])       # at or above the floor nothing is cut
+
+    def test_prompt_hook_clips_only_the_rarest_terms(self):
+        # 2026-09-28: a 36-term prompt matched a dozen common words and excerpt() kept one clip
+        # per term, so the snippet arrived as twelve 40-byte shreds joined by '…'.
+        common = ['alpha', 'beta', 'gamma', 'delta', 'epsilon']
+        for i in range(5):
+            atomic(self.memory.path(f'projects/other/context/topics/n{i}.md'), ' '.join(common) + '\n')
+        target = 'projects/other/context/topics/target.md'
+        atomic(self.memory.path(target), ''.join(t + ' here\n' + 'x' * 150 + '\n' for t in common + ['zebrakey']))
+        self.memory.config['automatic_recall_scope'] = 'all'
+        output = hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd),
+                                            'prompt': ' '.join(common + ['zebrakey']), 'session_id': 's'})
+        block = next(b for b in output.split('\nProject: ') if target in b)
+        self.assertIn('zebrakey', block)
+        self.assertLessEqual(block.count('\n…\n'), 2, block)
+
+    def test_verified_frontmatter_reaches_hit_and_hook_only_when_present(self):
+        # RAG plan T1.4.
+        dated, plain = 'projects/other/context/topics/dated.md', 'projects/other/context/topics/plain.md'
+        atomic(self.memory.path(dated), '---\nname: x\nverified: 2026-09-01\n---\nThe quokkarule holds.\n')
+        atomic(self.memory.path(plain), 'The quokkarule also shows up here, unverified quokkarule.\n---\nverified: 2020-01-01\n---\n')
+        hits = {h['source']: h for h in self.memory.search('quokkarule', self.cwd, 'all', log=False)['results']}
+        self.assertEqual((hits[dated]['verified'], hits[plain]['verified']), ('2026-09-01', None))
+        self.memory.config['automatic_recall_scope'] = 'all'
+        output = hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': 'quokkarule', 'session_id': 's'})
+        self.assertEqual(output.count('Verified: '), 1)
+        self.assertIn('dated.md:', output.split('Verified: 2026-09-01')[0].rsplit('Source: ', 1)[1])
+
+    def test_excerpt_picks_the_cut_with_most_matched_terms(self):
+        text = 'alpha here\n' + 'pad\n' * 200 + 'alpha and rs.beta\n' + 'tail\n'
+        start, cut = memory_core.excerpt(text, ['alpha', 'beta'], 100)
+        self.assertEqual(start, 201)
+        self.assertIn('rs.beta', cut)
+        self.assertEqual(memory_core.excerpt('a\nalpha x\nalpha y', ['alpha'], 100)[0], 1)  # tie -> earliest
+        self.assertEqual(memory_core.excerpt('none here', ['alpha'], 5), (0, 'none '))
+        # Terms too far apart for one cut: each term's line survives.
+        self.assertEqual(memory_core.excerpt('alpha\n' + 'pad\n' * 100 + 'alpha again\n' + 'pad\n' * 100 + 'rs.beta', ['alpha', 'beta'], 50), (0, 'alpha\n…\nrs.beta'))
+        # A long first line must not eat the budget of the next term's line.
+        start, cut = memory_core.excerpt('x' * 300 + ' alpha ' + 'y' * 300 + '\n' + 'pad\n' * 100 + 'rs.beta', ['alpha', 'beta'], 100)
+        self.assertEqual(start, 0)
+        self.assertIn('alpha', cut)
+        self.assertIn('rs.beta', cut)
+        self.assertLessEqual(len(cut.encode()), 100)
+        # Two terms on one line plus a later term: all three fit, so all three stay (Codex repro).
+        line = 'x' * 80 + ' alpha ' + 'z' * 30 + ' beta ' + 'y' * 80  # beta beyond alpha's padding
+        cut = memory_core.excerpt(line + '\n' + 'pad\n' * 100 + 'rs.gamma', ['alpha', 'beta', 'gamma'], 100)[1]
+        self.assertTrue(all(t in cut for t in ('alpha', 'beta', 'rs.gamma')), cut)
+        self.assertLessEqual(len(cut.encode()), 100)
+        # Terms too far apart on one line: fall back to each line's first term, never lose the next line.
+        line = 'alpha ' + 'z' * 300 + ' beta'
+        cut = memory_core.excerpt(line + '\n' + 'pad\n' * 100 + 'rs.gamma', ['alpha', 'beta', 'gamma'], 100)[1]
+        self.assertTrue('alpha' in cut and 'rs.gamma' in cut and len(cut.encode()) <= 100, cut)
+        # A term inside a longer word is not a match: the standalone `beta` must be the one kept (Codex repro).
+        # Gap wider than the context padding, or the padding would reach the real `beta` by luck.
+        cut = memory_core.excerpt('alpha betamax ' + 'x' * 60 + ' beta\n' + 'pad\n' * 100 + 'rs.gamma', ['alpha', 'beta', 'gamma'], 100)[1]
+        self.assertTrue({'alpha', 'beta', 'gamma'} <= memory_core.code_words(cut), cut)
+        self.assertEqual(memory_core._word_at('Ação beta', 'acao'), (0, 4))  # folded like tokens()
+        # Accents count in bytes, not chars: the cut still holds both terms within budget.
+        cut = memory_core.excerpt('é' * 200 + ' alpha\n' + 'pad\n' * 100 + 'ção beta', ['alpha', 'beta'], 40)[1]
+        self.assertTrue('alpha' in cut and 'beta' in cut and len(cut.encode()) <= 40, cut)
+        # A term only in the heading (sdk matched_terms) must not force the fallback.
+        self.assertEqual(memory_core.excerpt('x\nalpha y\nctx', ['alpha', 'fromheading'], 50), (1, 'alpha y\nctx'))
+
+    def test_word_at_agrees_with_code_words(self):
+        # Equivalence, not cases: the locator must find a term exactly when code_words() has it.
+        import random
+        rng = random.Random(11)
+        for _ in range(3000):
+            line = ''.join(rng.choice(['beta', 'x', '-', '.', ' ', 'é', 'B', '_']) for _ in range(rng.randint(0, 12)))
+            spot = memory_core._word_at(line, 'beta')
+            self.assertEqual(spot is not None, 'beta' in memory_core.code_words(line), line)
+            if spot:
+                self.assertEqual(line[spot[0]:spot[1]].casefold(), 'beta', line)
+        for line in ('-beta', 'beta-', 'x.beta', '.beta.', 'Béta'):
+            self.assertIsNotNone(memory_core._word_at(line, 'beta'), line)
+        self.assertIsNone(memory_core._word_at('beta-x betamax', 'beta'))
+
+    def test_recent_rag_hits_latest_event_for_that_path_wins(self):
+        # RAG plan T4.3. `at` decides, not file order.
+        for at, path, refs in (('2026-09-26T10:00:01', '/r/a.cs', ['old:1']), ('2026-09-26T10:00:05', '/r/a.cs', ['new:1']),
+                               ('2026-09-26T10:00:09', '/r/b.cs', ['other:1'])):
+            json_write(self.memory.state / 'usage' / (at[-2:] + '.json'), {'at': at, 'event': 'rag_edit', 'file_path': path, 'refs': refs})
+        self.assertEqual(self.memory.recent_rag_hits('/r/a.cs'), ['new:1'])
+        self.assertEqual(self.memory.recent_rag_hits('/r/none.cs'), [])
+
+    def test_explicit_feedback_excludes_automatic_lint_feedback(self):
+        for outcome, auto in (('code_failed', True), ('code_passed', True), ('relevant', False)):
+            self.memory.event({'event': 'feedback', 'outcome': outcome, 'automatic': auto})
+        cli = subprocess.run([sys.executable, str(BASE / 'scripts/memory_core.py'), '--root', str(self.root), 'report'],
+                             capture_output=True, text=True)
+        explicit = json.loads(cli.stdout)['explicit_feedback']
+        self.assertEqual((explicit['code_failed'], explicit['code_passed'], explicit['relevant']), (0, 0, 1))
+
+    def test_rag_report_counts_fires_bytes_and_failed_share(self):
+        events = [{'event': 'rag_edit', 'injected_bytes': 0}, {'event': 'rag_edit', 'injected_bytes': 900},
+                  {'event': 'rag_edit', 'injected_bytes': 1200}, {'event': 'rag_edit', 'injected_bytes': 1500},
+                  {'event': 'feedback', 'outcome': 'code_failed', 'automatic': True},
+                  {'event': 'feedback', 'outcome': 'code_passed', 'automatic': True},
+                  {'event': 'feedback', 'outcome': 'code_passed', 'automatic': True},
+                  {'event': 'feedback', 'outcome': 'code_failed'}]  # manual: not part of the share
+        self.assertEqual(memory_core.rag_report(events),
+                         {'fired': 4, 'injected': 3, 'injected_bytes_p50': 1200, 'code_failed_share': 0.333})
+
+    def test_excerpt_contract_on_random_chunks(self):
+        # Contract, not cases: never over budget; when the fallback's spans fit, every term shows.
+        import random
+        rng, terms = random.Random(7), ['alpha', 'beta', 'gamma', 'delta']
+        for _ in range(500):
+            lines = [''.join(rng.choice('xyé ') for _ in range(rng.randint(0, 120))) for _ in range(rng.randint(1, 60))]
+            for t in rng.sample(terms, rng.randint(1, 4)):
+                i = rng.randrange(len(lines))
+                at = rng.randint(0, len(lines[i]))
+                lines[i] = lines[i][:at] + ' ' + t + ' ' + lines[i][at:]
+                j = rng.randrange(len(lines))  # decoy: the term inside a longer word
+                lines[j] = t + 'max ' + lines[j]
+            content, budget = '\n'.join(lines), rng.randint(20, 400)
+            present = [t for t in terms if t in memory_core.code_words(content)]
+            cut = memory_core.excerpt(content, present, budget)[1]
+            self.assertLessEqual(len(cut.encode()), budget)
+            if len('\n…\n'.join(present).encode()) <= budget // 3 and all(
+                    len(l.encode()) <= budget // (2 * len(present)) for l in lines if any(t in l for t in present)):
+                self.assertTrue(set(present) <= memory_core.code_words(cut), (budget, cut))
+
     def test_min_terms_applies_before_the_limit(self):
         # Codex review 2026-09-26: filtering after truncation let three one-term hits
         # hide a valid two-term fourth hit and produced a false "no recall".
@@ -362,21 +493,6 @@ class Tests(unittest.TestCase):
         self.assertIn('Memory snapshot', hooks.handle(self.memory, {**base, 'hook_event_name': 'SessionStart'}))
         hooks.handle(self.memory, {**base, 'hook_event_name': 'Stop'})
         self.assertEqual(len(list((self.root / self.ctx / 'checkpoints').glob('*.md'))), 1)
-
-    def test_index_failure_retains_dirty_receipt(self):
-        self.apply(self.memory.change(self.rel, read(self.memory.path(self.rel)) + 'new'))
-        with patch('importlib.util.find_spec', return_value=object()), \
-             patch.object(maintain.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'offline')):
-            self.assertEqual(maintain.reindex(self.memory), 1)
-        self.assertEqual(len(list((self.memory.state / 'dirty').glob('*.json'))), 1)
-
-    def test_lexical_only_install_skips_index_and_keeps_receipt(self):
-        self.apply(self.memory.change(self.rel, read(self.memory.path(self.rel)) + 'new'))
-        with patch('importlib.util.find_spec', return_value=None), \
-             patch.object(maintain.subprocess, 'run') as run:
-            self.assertEqual(maintain.reindex(self.memory), 0)
-        run.assert_not_called()
-        self.assertEqual(len(list((self.memory.state / 'dirty').glob('*.json'))), 1)
 
     def test_model_has_no_tools_or_mcp_and_no_permission_bypass(self):
         with patch.object(maintain.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '{"result":"{\\"facts\\":[]}"}', '')) as run:
@@ -549,6 +665,16 @@ class CheckpointCollectionTests(unittest.TestCase):
         found = self.sources('transcripts')
         self.assertTrue(all('transcripts' in s for s in found))
 
+    def test_curated_fts_returns_only_allowed_sources(self):
+        # T3.1: the index holds scope `all`; the caller's allow-list is the only scope guard.
+        self.memory.index_collection('curated')
+        page = next(str(p.relative_to(self.root)) for p, _, _ in self.memory.documents(self.cwd, 'all', None, 'curated'))
+        hits = lambda allowed: [h['source'] for h in self.memory.search_fts(
+            'widget lock', log=False, collection='curated', allowed=allowed)['results']]
+        self.assertEqual(hits({page}), [page])
+        self.assertEqual(hits({'other.md'}), [])
+        self.assertEqual(hits(None), [])
+
     def test_unknown_collection_still_rejected(self):
         with self.assertRaises(ValueError):
             list(self.memory.documents(self.cwd, 'all', None, 'nonsense'))
@@ -594,6 +720,261 @@ class IdfScoringTests(unittest.TestCase):
         # The +1 inside the log keeps IDF positive: a term in every page must not zero out.
         hits = self.memory.search('sap', self.cwd, log=False)['results']
         self.assertTrue(hits and all(h['score'] > 0 for h in hits))
+
+
+class SpanScoringTests(unittest.TestCase):
+    """2026-09-28: a long prompt is scored as the best short query inside it. Whole-prompt coverage
+    buried the page matching 3 of 36 terms ("...got my Jev API Key...") under one matching filler."""
+    setUp = Tests.setUp
+    COMMON = 'deploy server config user report build test cache queue token'.split()
+
+    def seed(self):
+        for i in range(20):
+            atomic(self.memory.path(f'projects/other/context/topics/f{i}.md'), ' '.join(self.COMMON) + f' page{i}\n')
+        atomic(self.memory.path('projects/other/context/topics/chatty.md'), ' '.join(self.COMMON) + '\n')
+        atomic(self.memory.path('projects/other/context/topics/target.md'), 'zebra quokka marmot notes ' + 'lorem ' * 100 + '\n')
+
+    def scores(self, query, discount):
+        self.memory.config['span_discount'] = discount
+        return {h['source'].rsplit('/', 1)[1]: h['score'] for h in self.memory.search(query, self.cwd, 'all', limit=30, log=False)['results']}
+
+    def test_page_matching_one_topic_of_a_long_prompt_wins(self):
+        self.seed()
+        prompt = ' '.join(self.COMMON) + ' and by the way zebra quokka marmot arrived'
+        off, on = self.scores(prompt, 0), self.scores(prompt, 0.84)
+        self.assertGreater(off['chatty.md'], off['target.md'])  # the bug, reproduced with spans off
+        self.assertGreater(on['target.md'], on['chatty.md'])
+
+    def test_short_queries_and_weak_spans_are_untouched(self):
+        self.seed()
+        short = 'zebra quokka marmot unseen1 unseen2'  # <= SPAN_WIDTH terms; a 3/3 sub-span would beat 3/5
+        self.assertEqual(self.scores(short, 0), self.scores(short, 0.84))
+        for prompt in (' '.join(self.COMMON) + ' zebra quokka arrived',  # only 2 matched in the span
+                       ' '.join(self.COMMON) + ' zebra x1 x2 x3 x4 x5 x6 x7 x8 quokka marmot'):  # wider than SPAN_WIDTH
+            self.assertEqual(self.scores(prompt, 0)['target.md'], self.scores(prompt, 0.84)['target.md'], prompt)
+
+    def test_function_words_dropped_but_sql_words_kept(self):
+        self.assertEqual(memory_core.tokens('algo aqui onde from so if for while not nao on by'),
+                         ['for', 'while', 'not', 'nao', 'on', 'by'])
+
+
+class AutoEngineTests(unittest.TestCase):
+    """RAG plan T2.3: `mem search --auto` pays for semantic only when lexical is weak."""
+    setUp = Tests.setUp
+
+    def auto(self, query, floor, semantic_result):
+        cli = module('cli_auto', BASE / 'scripts/memory-cli.py')
+        self.memory.config['recall_min_score'] = floor
+        out = io.StringIO()
+        argv = ['mem', 'search', query, '--auto', '--json', '--scope', 'project', '--cwd', str(self.cwd)]
+        with patch.object(cli, 'Memory', return_value=self.memory), patch.object(sys, 'argv', argv), \
+                patch.object(cli, 'semantic', side_effect=[semantic_result]) as sem, redirect_stdout(out):
+            cli.run()
+        # The mock stands in for memory-search.py; under --auto it must be asked not to log.
+        self.assertTrue(all(c.kwargs.get('log') is False for c in sem.call_args_list))
+        logged = [e for e in map(json_read, (self.memory.state / 'usage').glob('*.json')) if e['event'] == 'search']
+        return json.loads(out.getvalue()), sem.call_count, len(logged)
+
+    def test_strong_lexical_skips_semantic(self):
+        output, calls, logged = self.auto('validation', 0.01, None)
+        self.assertEqual((output['engine'], calls, logged), ('lexical', 0, 1))
+
+    def test_weak_or_empty_lexical_runs_semantic(self):
+        hit = {'id': 'h', 'source': 'x.md', 'score': 0.8}
+        for query, floor in (('validation', 1e9), ('zzzabsent', 0)):
+            with self.subTest(query=query):
+                self.memory.state.joinpath('usage').mkdir(parents=True, exist_ok=True)
+                for old in self.memory.state.joinpath('usage').glob('*.json'):
+                    old.unlink()
+                output, calls, logged = self.auto(query, floor, {'request_id': 'r' * 32, 'scope': 'all', 'engine': 'semantic',
+                                                                 'elapsed_ms': 1, 'results': [hit]})
+                self.assertEqual((output['engine'], calls, logged), ('semantic', 1, 1))
+
+    def test_empty_semantic_keeps_weak_lexical_hits(self):
+        # Codex stop review 2026-09-26: an empty semantic answer replaced valid lexical hits.
+        output, calls, logged = self.auto('validation', 1e9, {'request_id': 'r' * 32, 'scope': 'all', 'engine': 'semantic',
+                                                              'elapsed_ms': 1, 'results': []})
+        self.assertEqual((output['engine'], calls, logged), ('lexical', 1, 1))
+        self.assertTrue(output['results'])
+
+    def test_semantic_failure_keeps_lexical(self):
+        output, _, logged = self.auto('validation', 1e9, ValueError('semantic index is busy'))
+        self.assertEqual((output['engine'], logged), ('lexical', 1))
+        self.assertTrue(output['results'])
+        self.assertEqual(output['semantic_error'], 'semantic index is busy')
+
+
+class StubEmbedder:
+    model = 'stub'
+
+    def __init__(self):
+        self.seen = []
+
+    def embed(self, texts):
+        import numpy as np
+        self.seen.extend(texts)
+        vecs = np.array([[1.0 if 'validation' in t.lower() else 0.0, 1.0] for t in texts], dtype=np.float32)
+        return vecs / np.linalg.norm(vecs, axis=1, keepdims=True)
+
+
+class SqliteEngineTests(unittest.TestCase):
+    """RAG plan T3.2: vectors in index.sqlite, fused with FTS, scoped before ranking."""
+
+    def setUp(self):
+        Tests.setUp(self)
+        self.semantic = module('semantic_sqlite', BASE / 'scripts/memory-search.py')
+        self.other = 'projects/other/context/MEMORY.md'
+        atomic(self.memory.path(self.other), '# Private\nvalidation validation validation\n')
+        self.memory.index_collection('curated')
+
+    def test_batches_bound_padded_tokens_and_keep_every_row(self):
+        rows = [(i, 'x' * n) for i, n in enumerate(sorted([10] * 100 + [900] * 20 + [5000] * 20))]
+        parts = list(self.semantic.batches(rows))
+        self.assertEqual([r for p in parts for r in p], rows)
+        for part in parts:
+            self.assertLessEqual(len(part) * min(1024, max(len(t) for _, t in part)), 8192)
+            self.assertLessEqual(len(part), 64)
+        self.assertEqual(len(parts[-2]), 8)                 # 1024-token chunks: 8 per batch, not 64
+
+    def test_index_vectors_embeds_only_chunks_without_a_vector(self):
+        stub = StubEmbedder()
+        self.assertEqual(self.semantic.index_vectors(self.memory, 'curated', stub)['embedded'], 2)
+        db = self.memory.sdk_db()
+        self.assertEqual(db.execute('SELECT DISTINCT length(blob), dim FROM vectors').fetchall(), [(4, 2)])  # float16
+        db.close()
+        self.assertEqual(self.semantic.index_vectors(self.memory, 'curated', stub)['embedded'], 0)
+        atomic(self.memory.path(self.rel), '# Context\nNever skip validation.\n')
+        self.memory.index_collection('curated')
+        stub.seen.clear()
+        self.assertEqual(self.semantic.index_vectors(self.memory, 'curated', stub)['embedded'], 1)
+        self.assertIn('skip', stub.seen[0])
+
+    def test_search_scoped_before_ranking(self):
+        stub = StubEmbedder()
+        self.semantic.index_vectors(self.memory, 'curated', stub)
+        search = lambda scope: [h['source'] for h in self.semantic.search_sqlite(
+            self.memory, 'validation', str(self.cwd), scope, None, 'curated', 5, stub)]
+        self.assertEqual(search('project'), [self.rel])     # the better-matching private page never shows
+        self.assertEqual(set(search('all')), {self.rel, self.other})
+
+    def test_search_drops_hits_whose_file_changed_since_indexing(self):
+        stub = StubEmbedder()
+        self.semantic.index_vectors(self.memory, 'curated', stub)
+        # No lexical match left, so only the vector leg's stale chunk could surface it.
+        atomic(self.memory.path(self.rel), '# Context\nNothing here.\n')
+        hits = self.semantic.search_sqlite(self.memory, 'validation', str(self.cwd), 'project', None, 'curated', 5, stub)
+        self.assertEqual(hits, [])
+
+
+class SdkFtsTests(unittest.TestCase):
+    """RAG plan T1.3: `sdk` collection, SQLite FTS5 over references/_md, lexical only."""
+    setUp = Tests.setUp
+
+    def page(self, rel, name, members):
+        text = f'---\nname: {name}\nkind: sdk\n---\n# SAPbobsCOM.{name}\n\n## Public Methods\n' + \
+               ''.join(f'- **{m}** — {d}\n' for m, d in members)
+        path = self.root / 'references/_md' / rel  # generated corpus: memory.path() refuses it, rightly
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def build(self):
+        self.page('di/Documents.md', 'Documents', [('Add', 'Adds a record.'), ('GetByKey', 'Retrieves by key.')])
+        self.page('di/Items.md', 'Items', [('Add', 'Adds an item.'), ('Update', 'Updates an item.')])
+        self.page('ui/Form.md', 'Form', [('Close', 'Closes the form.')])
+        return self.memory.index_sdk()
+
+    def sources(self, query, limit=5):
+        return [h['source'] for h in self.memory.search(query, self.cwd, collection='sdk', limit=limit, log=False)['results']]
+
+    def test_a_identifier_ranks_its_page_first_one_hit_per_source(self):
+        self.assertEqual(self.build(), {'indexed': 3, 'changed': 3, 'removed': 0})
+        self.assertEqual(self.sources('Documents GetByKey')[0], 'references/_md/di/Documents.md')
+        # Two matching sections in one page must still yield one hit for that page.
+        (self.root / 'references/_md/di/Items.md').write_text(
+            '# SAPbobsCOM.Items\n## Public Methods\n- **Add** — Adds.\n## Public Properties\n- **AddDate** — Add date.\n')
+        self.memory.index_sdk()
+        found = self.memory.search('Add', self.cwd, collection='sdk', log=False)
+        self.assertEqual(found['engine'], 'fts5')
+        self.assertEqual(sorted(h['source'] for h in found['results']),
+                         ['references/_md/di/Documents.md', 'references/_md/di/Items.md'])
+
+    def test_b_changed_file_updates_revision_and_content_only(self):
+        self.build()
+        self.page('di/Items.md', 'Items', [('Remove', 'Deletes an obsolete item.')])
+        self.assertEqual(self.memory.index_sdk(), {'indexed': 3, 'changed': 1, 'removed': 0})
+        hit = self.memory.search('obsolete', self.cwd, collection='sdk', log=False)['results'][0]
+        self.assertIn('Deletes an obsolete item.', hit['content'])
+        self.assertEqual(hit['revision'], digest(read(self.root / 'references/_md/di/Items.md')))
+        self.assertEqual(self.sources('Updates'), [])
+
+    def test_c_deleted_file_leaves_the_index(self):
+        self.build()
+        (self.root / 'references/_md/ui/Form.md').unlink()
+        self.assertEqual(self.memory.index_sdk()['removed'], 1)
+        self.assertEqual(self.sources('Closes form'), [])
+
+    def test_d_never_returns_a_path_outside_references_md(self):
+        self.build()
+        db = self.memory.sdk_db()
+        with db:
+            doc = db.execute("INSERT INTO docs(source, revision, collection) VALUES ('context/USER.md', 'x', 'sdk')").lastrowid
+            db.execute("INSERT INTO chunks(doc_id, line, end_line, heading, content) VALUES (?, 1, 1, 'x', 'GetByKey GetByKey GetByKey')", (doc,))
+        db.close()
+        self.assertTrue(self.sources('GetByKey'))
+        self.assertTrue(all(s.startswith('references/_md/') for s in self.sources('GetByKey')))
+
+    def test_operators_in_query_are_quoted_and_expand_reads_the_file(self):
+        self.build()
+        found = self.memory.search('SAPbobsCOM.Documents get-by-key "x" AND', self.cwd, collection='sdk')
+        self.assertEqual(found['results'][0]['source'], 'references/_md/di/Documents.md')
+        self.assertIn('Retrieves by key.', self.memory.expand(found['request_id'], found['results'][0]['id'])['content'])
+
+    def test_matched_terms_see_through_dotted_code(self):
+        path = self.root / 'references/_md/samples/a.cs.md'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('# a.cs\n\n```csharp\noRecordSet.DoQuery(sql);\n```\n')
+        self.memory.index_sdk()
+        hit = self.memory.search('DoQuery Recordset', self.cwd, collection='sdk', log=False)['results'][0]
+        self.assertEqual(hit['matched_terms'], ['doquery'])
+
+    def test_reindexed_chunk_never_inherits_an_old_vector(self):
+        # T3.2: a deleted chunk's vector must go with it - SQLite reuses the freed rowid.
+        self.build()
+        db = self.memory.sdk_db()
+        with db:
+            cid = db.execute("SELECT c.id FROM chunks c JOIN docs d ON d.id = c.doc_id WHERE d.source LIKE '%Items.md'").fetchone()[0]
+            db.execute("INSERT INTO vectors(chunk_id, model, dim, blob) VALUES (?, 'm', 1, x'00000000')", (cid,))
+        db.close()
+        self.page('di/Items.md', 'Items', [('Remove', 'Changed page.')])
+        self.memory.index_sdk()
+        db = self.memory.sdk_db()
+        self.assertEqual(db.execute('SELECT count(*) FROM vectors').fetchone()[0], 0)
+        db.close()
+
+    def test_missing_index_is_an_error_not_an_empty_result(self):
+        with self.assertRaisesRegex(ValueError, 'sdk index not built'):
+            self.memory.search('GetByKey', self.cwd, collection='sdk')
+
+    def test_long_section_split_with_overlap(self):
+        text = '# T\n## S\n' + ''.join(f'line {i}\n' for i in range(100))
+        spans = [(a, b) for a, b, _, _ in memory_core.sdk_chunks(text)]
+        self.assertEqual(spans, [(2, 41), (38, 77), (74, 102)])
+        self.assertEqual({h for _, _, h, _ in memory_core.sdk_chunks(text)}, {'T > S'})
+
+    def test_cli_rejects_semantic_and_auto_stays_fts_and_logged(self):
+        self.build()
+        cli = module('cli_sdk', BASE / 'scripts/memory-cli.py')
+        base = ['mem', 'search', 'GetByKey', '-c', 'sdk', '--json', '--cwd', str(self.cwd)]
+        with patch.object(cli, 'Memory', return_value=self.memory), patch.object(sys, 'argv', base + ['--semantic']):
+            with self.assertRaisesRegex(ValueError, 'lexical only'):
+                cli.run()
+        out = io.StringIO()
+        with patch.object(cli, 'Memory', return_value=self.memory), patch.object(sys, 'argv', base + ['--auto']), \
+                patch.object(cli, 'semantic') as sem, redirect_stdout(out):
+            cli.run()
+        found = json.loads(out.getvalue())
+        self.assertEqual((found['engine'], sem.call_count), ('fts5', 0))
+        self.assertTrue(self.memory.expand(found['request_id'], found['results'][0]['id']))
 
 
 class IntegrationTests(unittest.TestCase):
@@ -654,122 +1035,6 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(self.memory.feedback(found['request_id'], reference, 'relevant'), {'recorded': 'relevant'})
         with self.assertRaisesRegex(ValueError, 'belong'):
             self.memory.feedback(found['request_id'], 'not-returned', 'used')
-
-    def test_incremental_index_does_not_prune_other_sources(self):
-        import asyncio
-        import types
-        from unittest.mock import Mock, AsyncMock
-        indexer = module('indexer', BASE / 'scripts/memory-index.py')
-        backend = Mock()
-        backend._index_file = AsyncMock(return_value=1)
-        scanned = types.SimpleNamespace(path=self.memory.path(self.rel))
-        modules = {
-            'memsearch.core': types.SimpleNamespace(MemSearch=Mock(return_value=backend)),
-            'memsearch.config': types.SimpleNamespace(resolve_config=lambda: {}),
-            'memsearch.cli': types.SimpleNamespace(_cfg_to_memsearch_kwargs=lambda _: {}),
-            'memsearch.scanner': types.SimpleNamespace(scan_paths=lambda _: [scanned])}
-        with patch.dict(sys.modules, modules):
-            self.assertEqual(asyncio.run(indexer.update([str(scanned.path)])), 1)
-        backend._index_file.assert_awaited_once_with(scanned)
-        backend.index.assert_not_called()
-        backend._store.delete_by_source.assert_not_called()
-        backend.close.assert_called_once()
-
-    def test_rebuild_batches_files_without_collection_pruning(self):
-        import asyncio
-        import types
-        from unittest.mock import Mock, AsyncMock
-        compute_chunk_id = lambda *parts: digest(repr(parts))
-        indexer = module('indexer_batch', BASE / 'scripts/memory-index.py')
-        first = self.memory.path(self.rel)
-        second = self.memory.path(self.ctx + '/topics/second.md')
-        atomic(second, 'Another independent decision.')
-        backend = Mock()
-        backend._max_chunk_size = 1500
-        backend._overlap_lines = 2
-        backend._embedder.model_name = 'test-model'
-        backend._store.hashes_by_source.return_value = set()
-        backend._embed_and_store = AsyncMock(side_effect=lambda chunks: len(chunks))
-        modules = {
-            'memsearch.core': types.SimpleNamespace(MemSearch=Mock(return_value=backend), compute_chunk_id=compute_chunk_id),
-            'memsearch.chunker': types.SimpleNamespace(chunk_markdown=lambda text, source, **_: [types.SimpleNamespace(source=source, start_line=1, end_line=1, content_hash=digest(text), content=text)]),
-            'memsearch.config': types.SimpleNamespace(resolve_config=lambda: {}),
-            'memsearch.cli': types.SimpleNamespace(_cfg_to_memsearch_kwargs=lambda _: {}),
-            'memsearch.scanner': types.SimpleNamespace(scan_paths=lambda _: [types.SimpleNamespace(path=p) for p in (first, second)])}
-        with patch.dict(sys.modules, modules):
-            count = asyncio.run(indexer.update([str(first), str(second)], batch_across_files=True))
-        self.assertEqual(count, 2)
-        sent = backend._embed_and_store.call_args.args[0]
-        self.assertEqual({chunk.source for chunk in sent}, {str(first), str(second)})
-        backend._store.delete_by_source.assert_not_called()
-        backend.index.assert_not_called()
-
-    def test_semantic_search_waits_for_index_worker(self):
-        import asyncio
-        import fcntl
-        from unittest.mock import AsyncMock
-        semantic = module('semantic_lock', BASE / 'scripts/memory-search.py')
-        self.memory.state.mkdir(parents=True, exist_ok=True)
-        async def check():
-            with (self.memory.state / 'index.lock').open('a') as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX)
-                with patch.object(semantic, 'search_scoped', new_callable=AsyncMock, return_value=[]) as query:
-                    task = asyncio.create_task(semantic.search(self.memory, 'test', str(self.cwd), 'all', None, 'curated', 5))
-                    await asyncio.sleep(0.03)
-                    query.assert_not_called()
-                    fcntl.flock(lock, fcntl.LOCK_UN)
-                    self.assertEqual(await task, [])
-                    query.assert_awaited_once()
-        asyncio.run(check())
-
-    def test_semantic_keeps_crlf_evidence_and_drops_stale_duplicates(self):
-        import asyncio
-        import types
-        from unittest.mock import Mock, AsyncMock
-        semantic = module('semantic_crlf', BASE / 'scripts/memory-search.py')
-        path = self.memory.path(self.rel)
-        atomic(path, 'Heading\r\nNever disable validation.\r\n')
-        backend = Mock()
-        backend._embedder.embed = AsyncMock(return_value=[[1.0]])
-        good = {'source': str(path), 'content': 'Heading\nNever disable validation.', 'score': 1}
-        backend._store.search.return_value = [{**good, 'content': 'Always disable validation.'}, good, good]
-        backend._reranker_model = ''
-        modules = {
-            'memsearch.core': types.SimpleNamespace(MemSearch=Mock(return_value=backend)),
-            'memsearch.config': types.SimpleNamespace(resolve_config=lambda: {}),
-            'memsearch.cli': types.SimpleNamespace(_cfg_to_memsearch_kwargs=lambda _: {}),
-            'memsearch.store': types.SimpleNamespace(_escape_filter_value=lambda value: value),
-            'memsearch.reranker': types.SimpleNamespace(rerank=Mock())}
-        with patch.dict(sys.modules, modules):
-            hits = asyncio.run(semantic.search(self.memory, 'validation', str(self.cwd), 'project', None, 'curated', 5))
-        self.assertEqual(len(hits), 1)
-        self.assertEqual(hits[0]['content'], good['content'])
-        self.assertEqual(hits[0]['revision'], digest(read(path)))
-
-    def test_semantic_scope_checked_before_reranking(self):
-        import asyncio
-        import types
-        from unittest.mock import Mock, AsyncMock
-        semantic = module('semantic', BASE / 'scripts/memory-search.py')
-        backend = Mock()
-        backend._embedder.embed = AsyncMock(return_value=[[1.0]])
-        backend._store.search.return_value = [{'source': str(self.root / 'projects/other/context/MEMORY.md'), 'content': 'private', 'score': 1}]
-        backend._reranker_model = 'test'
-        rerank = Mock()
-        modules = {
-            'memsearch.core': types.SimpleNamespace(MemSearch=Mock(return_value=backend)),
-            'memsearch.config': types.SimpleNamespace(resolve_config=lambda: {}),
-            'memsearch.cli': types.SimpleNamespace(_cfg_to_memsearch_kwargs=lambda _: {}),
-            'memsearch.store': types.SimpleNamespace(_escape_filter_value=lambda value: value),
-            'memsearch.reranker': types.SimpleNamespace(rerank=rerank)}
-        with patch.dict(sys.modules, modules):
-            with self.assertRaisesRegex(ValueError, 'outside'):
-                asyncio.run(semantic.search(self.memory, 'validation', str(self.cwd), 'project', None, 'curated', 5))
-        expression = backend._store.search.call_args.kwargs['filter_expr']
-        self.assertIn(str(self.memory.path(self.rel)), expression)
-        self.assertNotIn('/projects/other/', expression)
-        rerank.assert_not_called()
-        backend.close.assert_called_once()
 
     def test_store_reads_refuse_symlinks_anywhere_on_the_path(self):
         import datetime as dt
