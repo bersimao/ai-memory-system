@@ -33,16 +33,24 @@ def answer(memory, request, search, vectors=None):
     # mode "vector": the vector leg alone, which the hook fuses with the lexical ranking it already
     # has (hybrid recall, 2026-09-28) - deeper, since RRF needs a ranking, not a top 2.
     vector = request.get('mode') == 'vector'
-    if not isinstance(query, str) or not query.strip() or scope not in ('project', 'all') or not 0 < limit <= (30 if vector else 10):
+    # `mem search --semantic` asks here too (2026-10-11), so the CLI's own range applies: any
+    # semantic collection, a skill domain, up to 50 hits. The hook sends none of the three.
+    collection, domain = request.get('collection', 'curated'), request.get('domain')
+    if (not isinstance(query, str) or not query.strip() or scope not in ('project', 'all')
+            or collection not in ('curated', 'transcripts') or not 0 < limit <= (30 if vector else 50)):
         raise ValueError('invalid request')
     if vector and vectors is None:
         raise ValueError('vector mode needs semantic_engine sqlite')
     if vector:
         hits = vectors(memory, query, request['cwd'], scope, None, 'curated', limit)
     else:
-        hits = asyncio.run(search(memory, query, request['cwd'], scope, None, 'curated', limit))
+        hits = asyncio.run(search(memory, query, request['cwd'], scope, domain, collection, limit))
     engine = 'vector' if vector else 'semantic'
-    result = {'request_id': uuid.uuid4().hex, 'results': hits, 'engine': engine}
+    # `collection` is echoed so a caller can tell this process honoured it (one started from older
+    # code ignores the field and answers from `curated`).
+    result = {'request_id': uuid.uuid4().hex, 'results': hits, 'engine': engine, 'collection': collection}
+    if not request.get('log', True):  # the CLI logs the result it keeps, under its own engine label
+        return result
     # Same event memory-search.py logs, so `mem expand` works on these hits.
     memory.event({'event': 'search', 'request_id': result['request_id'], 'session': request.get('session'),
                   'query_hash': digest(query), 'scope': scope, 'engine': engine,

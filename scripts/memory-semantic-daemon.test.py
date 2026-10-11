@@ -70,7 +70,7 @@ class SemanticDaemonTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'invalid'):
             daemon.answer(self.memory, {'query': ' ', 'cwd': str(self.cwd)}, self.fake_search)
         with self.assertRaisesRegex(ValueError, 'invalid'):
-            daemon.answer(self.memory, {'query': 'x', 'cwd': str(self.cwd), 'limit': 50}, self.fake_search)
+            daemon.answer(self.memory, {'query': 'x', 'cwd': str(self.cwd), 'limit': 51}, self.fake_search)
         result = daemon.answer(self.memory, {'query': 'retry key', 'cwd': str(self.cwd)}, self.fake_search)
         self.assertIn('persistida', self.memory.expand(result['request_id'], 'h1')['content'])
 
@@ -194,6 +194,72 @@ class SemanticDaemonTests(unittest.TestCase):
         self.assertEqual(daemon.answer(self.memory, request, self.fake_search, self.fake_vectors)['engine'], 'vector')
         with self.assertRaisesRegex(ValueError, 'invalid'):
             daemon.answer(self.memory, {**request, 'limit': 31}, self.fake_search, self.fake_vectors)
+
+    def test_cli_semantic_asks_the_resident_process_and_falls_back(self):
+        import types
+        cli = module('memory_cli', BASE / 'scripts/memory-cli.py')
+        args = types.SimpleNamespace(query='retry key', cwd=str(self.cwd), scope='all', domain=None, top_k=20, session='s')
+        seen, loads, real_run, real_answer, canned = [], [], cli.subprocess.run, daemon.answer, self.fake_search
+
+        async def search(memory, query, cwd, scope, domain, collection, limit):
+            seen.append((collection, domain, limit))
+            return await canned(memory, query, cwd, scope, domain, collection, limit)
+
+        def run(command, **kwargs):  # only the model-loading subprocess is faked; `resolve` still runs node
+            if 'memory-search.py' not in str(command):
+                return real_run(command, **kwargs)
+            loads.append(command)
+            return types.SimpleNamespace(returncode=0, stdout='{"results": []}', stderr='')
+        self.fake_search = search
+        thread = self.start()
+        events = lambda: len(list((self.memory.state / 'usage').glob('*.json')))
+        with patch.object(cli.subprocess, 'run', side_effect=run):
+            found = cli.semantic(self.memory, args, 'transcripts')
+            self.assertEqual((seen, loads, found['engine'], found['results'][0]['source']),
+                             ([('transcripts', None, 20)], [], 'semantic-sqlite', self.rel))   # no second process
+            self.assertEqual(events(), 1)                             # logged once, by the CLI
+            self.memory.expand(found['request_id'], 'h1')             # and expandable
+            cli.semantic(self.memory, args, 'transcripts', log=False)  # --auto logs the result it keeps
+            self.assertEqual((events(), loads), (2, []))               # 2 = the search + the expand above
+            # A process started from older code ignores `collection`: its answer must not be used.
+            with patch.object(daemon, 'answer', side_effect=lambda *a, **k: {**real_answer(*a, **k), 'collection': 'curated'}):
+                self.assertEqual(cli.semantic(self.memory, args, 'transcripts'), {'results': []})
+            self.assertEqual(len(loads), 1)
+            daemon.socket_path(self.memory).unlink()                  # nobody listening
+            self.assertEqual(cli.semantic(self.memory, args, 'curated'), {'results': []})
+            self.assertEqual(len(loads), 2)
+            # Listening but silent (busy with another request, or stuck): give up after RESIDENT_WAIT.
+            import time
+            silent = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.addCleanup(silent.close)
+            silent.bind(str(daemon.socket_path(self.memory)))
+            silent.listen(1)
+            started = time.monotonic()
+            with patch.object(cli, 'RESIDENT_WAIT', 0.3):
+                self.assertEqual(cli.semantic(self.memory, args, 'curated'), {'results': []})
+            self.assertEqual(len(loads), 3)
+            self.assertLess(time.monotonic() - started, 3)
+            # Answering, but a byte at a time: the bound is on the whole exchange, not on each read.
+            def trickle():
+                conn, _ = silent.accept()                             # the silent case above left one queued
+                conn.close()
+                conn, _ = silent.accept()
+                with conn:
+                    for _ in range(40):
+                        try:
+                            conn.sendall(b' ')
+                        except OSError:
+                            return
+                        time.sleep(0.1)
+            slow = threading.Thread(target=trickle, daemon=True)
+            slow.start()
+            started = time.monotonic()
+            with patch.object(cli, 'RESIDENT_WAIT', 0.5):
+                self.assertEqual(cli.semantic(self.memory, args, 'curated'), {'results': []})
+            self.assertEqual(len(loads), 4)
+            self.assertLess(time.monotonic() - started, 2)
+            slow.join(timeout=10)
+        self.assertLessEqual(cli.RESIDENT_WAIT, 5)                    # the real bound stays a few seconds
 
     def test_idle_daemon_exits(self):
         thread = self.start(idle=0.2)

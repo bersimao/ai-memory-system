@@ -4,14 +4,65 @@ import argparse
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
+import time
 from memory_core import Memory, main
+
+
+# How long a search waits for the resident process before loading the model itself (~2.3 s). It
+# answers curated in ~1.3 s and transcripts in ~2.6 s (measured 2026-10-11); past this it is busy with someone else's
+# request or stuck, and waiting longer costs more than the load it was meant to save.
+RESIDENT_WAIT = 5
+
+
+def resident(memory, args, collection):
+    """Ask the prompt hook's resident embedder: no ~2.3 s model load per call. None = not running,
+    busy past RESIDENT_WAIT, failed, or started from older code that ignores `collection`; the caller
+    then loads the model itself, so the worst case is RESIDENT_WAIT on top of the old path.
+    ponytail: one request at a time over there, so a long search here can make a prompt's vector
+    leg time out (2 s) and fall back to lexical; a second worker if that shows in `mem report`."""
+    started = time.monotonic()
+
+    def left():
+        # One deadline for the whole exchange: a socket timeout alone restarts on every connect, send
+        # and recv, so a process that trickles bytes would hold the search far past RESIDENT_WAIT.
+        remaining = started + RESIDENT_WAIT - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('resident process too slow')
+        return remaining
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(left())
+            client.connect(str(memory.state / 'semantic.sock'))
+            client.settimeout(left())
+            client.sendall((json.dumps({'query': args.query, 'cwd': args.cwd, 'scope': args.scope, 'domain': args.domain,
+                                        'collection': collection, 'limit': args.top_k, 'log': False}) + '\n').encode('utf-8'))
+            data = b''
+            while not data.endswith(b'\n'):
+                client.settimeout(left())
+                chunk = client.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+            reply = json.loads(data)
+    except (OSError, ValueError):
+        return None
+    if 'error' in reply or reply.get('collection') != collection:
+        return None
+    return {'request_id': reply['request_id'], 'results': reply['results'], 'scope': args.scope,
+            'engine': 'semantic-sqlite', 'elapsed_ms': round((time.monotonic() - started) * 1000)}
 
 
 def semantic(memory, args, collection, log=True):
     # Validate scope/domain before invoking optional dependencies.
     memory.roots(args.cwd, args.scope, args.domain, collection)
+    found = resident(memory, args, collection)
+    if found:
+        if log:
+            memory.log_search(found, args.query, args.session)
+        return found
     payload = {'root': str(memory.root), 'query': args.query, 'cwd': args.cwd, 'scope': args.scope,
                'domain': args.domain, 'collection': collection, 'limit': args.top_k, 'session': args.session, 'log': log}
     result = subprocess.run([sys.executable, str(Path(__file__).with_name('memory-search.py'))],
