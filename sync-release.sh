@@ -46,6 +46,7 @@ MANIFEST=(
   cron/jsonl-to-transcript.py
   cron/jsonl-to-transcript.test.py
   cron/memory-index.sh
+  cron/memory-index.test.sh
   cron/alert.sh
   cron/check-caps.sh
   cron/check-caps.test.sh
