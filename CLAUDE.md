@@ -77,7 +77,7 @@ list decays into a place where things get quietly added.
 ```
 hooks/    the SessionStart/Stop hooks (installed into ~/.claude/hooks/)
 cron/     scheduled maintenance: curate, distill, backfill, tripwires
-scripts/  mem (retrieval seam), llm-run (LLM calls with quota handling)
+scripts/  mem (retrieval seam), memory-maintain.py (LLM extraction with quota handling)
 docs/     retrieval-interface.md, model-agnostic.md
 migration/  one-shot scripts for store layout changes, kept for reference
 ```

@@ -122,7 +122,8 @@ FACTS_PROMPT = ('Return {"facts":[{"text":"...","quote":"..."}]}. Extract only k
                 'symbols may be dropped). Return an empty list when nothing qualifies. At most 12 facts. These are '
                 'candidates, not verified truth.')
 
-# Account-wide limits: every following call fails the same way (see scripts/llm-run).
+# Account-wide limits: every following call fails the same way, so the batch stops
+# (2026-08-24: a backfill kept going past the limit, 57 identical dead calls).
 QUOTA = re.compile(r'cc_cli_limit_message|spend limit|usage limit|limit.{0,80}(resets|will reset|reset at)', re.I | re.S)
 
 

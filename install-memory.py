@@ -87,7 +87,7 @@ def main():
     try:
         for target, content in writes.items():
             atomic(target, content)
-            if target.suffix in ('.sh', '.py') or target.name in ('mem', 'skill-grep', 'llm-run'):
+            if target.suffix in ('.sh', '.py') or target.name in ('mem', 'skill-grep'):
                 target.chmod(0o755)
         command = ['python3', str(HERE / 'configure-memory.py'), '--root', str(root), '--scope', args.scope]
         if codex:

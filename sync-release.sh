@@ -54,7 +54,6 @@ MANIFEST=(
   cron/check-mem-review.sh
   scripts/mem
   scripts/mem.test.sh
-  scripts/llm-run
   scripts/skill-grep
   scripts/skill-grep.test.sh
   scripts/memory-semantic-daemon.py
