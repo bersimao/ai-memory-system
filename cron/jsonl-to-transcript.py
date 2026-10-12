@@ -41,6 +41,11 @@ MAX_CHARS = 250_000
 # that partial, the complete extraction never ran: 79 days skipped, 0 written,
 # for as long as the script existed.
 MARKER = "<!-- auto-extracted"
+# /tmp/claude-<uid>/ is where Claude Code keeps session scratchpads, so a store encoded from it is
+# a headless test (hook canaries, skill-check fixtures), never a project. Its transcripts became
+# memory pages that were injected into real sessions, and they came back the morning after being
+# removed (2026-10-12). Same prefix as the guard in scripts/memory-maintain.py.
+TEMP_STORE = "-tmp-claude-"
 SKIP_TYPES = {"attachment", "last-prompt", "queue-operation", "system"}
 NOISE_PREFIXES = (
     "<system-reminder>", "<command-name>", "<command-message>", "<command-args>",
@@ -203,6 +208,8 @@ def main():
             merged[store][day].extend(entries)
 
     for pd in sorted(merged):
+        if os.path.basename(pd).startswith(TEMP_STORE):
+            continue
         tdir = os.path.join(pd, "context", "transcripts")
         for day, entries in sorted(merged[pd].items()):
             if day == TODAY:

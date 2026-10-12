@@ -127,5 +127,17 @@ with tempfile.TemporaryDirectory() as root:
     except Exception as e:
         check("collect_codex without the directory does not raise", False, str(e))
 
+    # --- temp work dirs ------------------------------------------------------
+    # A headless test session run under /tmp must not get a transcript: backfill would
+    # turn it into a memory page, and those pages were injected into real sessions.
+    tmp_store = os.path.join(m.ROOT, "-tmp-claude-1000-fixture")
+    os.makedirs(tmp_store)
+    with open(os.path.join(tmp_store, "s.jsonl"), "w", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "canary prompt " * 40},
+                            "timestamp": f"{yesterday}T10:00:00+00:00"}) + "\n")
+    sys.argv = ["j"]
+    m.main()
+    check("store of a /tmp work dir gets no transcript", not os.path.exists(os.path.join(tmp_store, "context")))
+
 print("PASS" if not fails else f"FAILED: {len(fails)}")
 sys.exit(1 if fails else 0)

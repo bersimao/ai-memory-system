@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # grep a skill's knowledge/reference file; on a miss, fall back to semantic
-# search (mem/memsearch) scoped to that same skill — before mem, never after,
+# search (mem) scoped to that same skill — before mem, never after,
 # so the common case (grep hits) pays zero extra latency.
 #
 # Why this exists: grep is exact-string, so a same-language paraphrase (e.g.

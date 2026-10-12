@@ -7,6 +7,7 @@ Models propose text. This module owns revisions, journals and filesystem writes.
 import argparse
 import contextlib
 import datetime as dt
+import errno
 import fcntl
 import hashlib
 import json
@@ -14,6 +15,7 @@ import math
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -24,6 +26,32 @@ import uuid
 VERSION = 1
 CODE = Path(__file__).resolve().parent.parent
 STOP_WORDS = set('the a an and or to of in is it that this we you i our have has had was were been be do does did would could should how what when where with about considering problem solved remember data info information de da do dos das e o a os as um uma que em para por com no na nos nas foi era ja se como qual isso nosso nossa voce sobre problema resolvido lembrar'.split())
+# Function words, en + pt, modeled on the Snowball stop lists (written from memory, not byte-identical)
+# plus chat filler. A technical corpus makes IDF rate them rare ("algo", "pronto", "chegar"): a 36-term
+# prompt matched a session log on if/so/from/once, and three of them side by side outscored real pages
+# (2026-09-28). Kept searchable because they mean something in SQL/code: for, while, not, nao, on, by.
+# `as` is NOT kept: it is also the pt article, in both lists.
+STOP_WORDS |= set('''
+i me my myself we our ours ourselves you your yours yourself yourselves he him his himself she her hers herself it its
+itself they them their theirs themselves what which who whom this that these those am is are was were be been being have
+has had having do does did doing would should could ought a an the and but if or because until of at with about against
+between into through during before after above below to from up down in out off over under again further then once here
+there when where why how any both each few more most other some such no nor only own same so than too very can will just
+don doesn didn isn aren wasn weren hasn haven hadn won wouldn shouldn couldn mustn ll re ve let lets hey hi ok okay please
+thanks thank yes yeah also still even maybe really actually got want know think us
+de a o que e do da em um para com uma os no se na por mais as dos como mas ao ele das seu sua ou quando muito nos ja eu
+tambem so pelo pela ate isso ela entre depois sem mesmo aos seus quem nas me esse eles voce essa num nem suas meu minha
+numa pelos elas qual lhe deles essas esses pelas este dele tu te voces vos lhes meus minhas teu tua teus tuas nosso nossa
+nossos nossas dela delas esta estes estas aquele aquela aqueles aquelas isto aquilo estou estamos estao estive esteve
+estivemos estiveram estava estavamos estavam esteja estejam estivesse estiver ha havemos hao houve haja sou somos sao era
+eramos eram fui foi fomos foram fora seja sejam fosse fossem formos forem serei sera seremos serao seria seriam tenho tem
+temos tinha tinhamos tinham tive teve tivemos tiveram tenha tenham tivesse tiver terei tera teremos terao teria teriam pra
+pro pras pros ta ne vc gente aqui ali la entao agora ainda sempre nunca algo alguem algum alguma alguns algumas nada tudo
+todo toda todos todas cada outro outra outros outras onde porque pq pois assim bem apenas
+'''.split())
+# A long prompt is scored as the best short query inside it (`_best_span`). Calibration queries have
+# 3-9 terms (bench, 2026-09-28), so a span is at most SPAN_WIDTH consecutive terms matching SPAN_TERMS.
+SPAN_WIDTH, SPAN_TERMS = 9, 3
 
 
 def now():
@@ -89,37 +117,104 @@ def redact(text):
     return re.sub(r'((?:TOKEN|SECRET|PASSWORD|SENHA|SEGREDO|API_KEY|APIKEY)(?:[_-][A-Za-z0-9]+)*["\']?\s*[=:]\s*)(?:"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|\S+)', r'\1[REDACTED]', text, flags=re.I)
 
 
-def semantic_db_owned_by(root):
-    """True when this memory root may use the memsearch vector DB.
-
-    memsearch keeps ONE local DB per user account (~/.memsearch/milvus.db by
-    default), and its `index` command prunes every source it was not handed. Two
-    memory roots sharing it would delete each other's chunks on every run, and a
-    per-root lock cannot see the other root. So the first root to use the DB
-    claims it in `<db>.owner-root`; any other root skips semantic work.
-    A remote Milvus URI is the operator's to partition; it is not claimed here.
-    """
-    from memsearch.config import resolve_config
-    uri = resolve_config().milvus.uri
-    if '://' in uri:
-        return True
-    owner = Path(os.path.expanduser(uri) + '.owner-root')
-    owner.parent.mkdir(parents=True, exist_ok=True)
-    mine = str(Path(root).resolve())
-    try:
-        fd = os.open(owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return owner.read_text(encoding='utf-8').strip() == mine
-    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-        stream.write(mine + '\n')
-    return True
-
-
 def tokens(text):
     plain = ''.join(c for c in unicodedata.normalize('NFKD', text.casefold()) if not unicodedata.combining(c))
     words = [w.strip('.-') for w in re.findall(r'[\w.-]+', plain)]
     return [w for w in words if len(w) > 1 and w not in STOP_WORDS]
 
+
+def _best_span(sequence, positions, gain):
+    """Plain score of the best short query inside a long one, before the length norm: over spans of at
+    most SPAN_WIDTH consecutive query terms holding SPAN_TERMS+ distinct matched ones, the max of (sum of
+    their gains) x (matched / distinct terms in span), as if the user had typed only that span.
+    Whole-prompt coverage buried a page matching one topic of a mixed prompt: 3 of 36 terms (2026-09-28)."""
+    marks = sorted(i for w in gain for i in positions[w])
+    best = 0.0
+    for a, first in enumerate(marks):
+        for last in marks[a + SPAN_TERMS - 1:]:
+            if last - first >= SPAN_WIDTH:
+                break
+            span = set(sequence[first:last + 1])
+            matched = span & gain.keys()
+            if len(matched) >= SPAN_TERMS:
+                best = max(best, sum(gain[w] for w in matched) * len(matched) / len(span))
+    return best
+
+
+def code_words(text):
+    """tokens() plus each dotted part: FTS5 splits `oRecordSet.DoQuery` on the dot, tokens() does not,
+    so anything matching FTS5 hits against text must see `doquery` too."""
+    return {part for word in tokens(text) for part in [word, *word.split('.')]}
+
+
+def excerpt(content, matched_terms, budget):
+    """(line offset, text) of at most `budget` bytes that shows every matched term it can.
+    Starting at the FIRST matched line lost the term that mattered: `recordset` at line 409 opened
+    the cut and `oRecordSet.DoQuery` at 430 fell past 400 bytes (Codex review, 2026-09-26)."""
+    lines, matched = content.split('\n'), set(matched_terms)
+    hits = [i for i, line in enumerate(lines) if matched & code_words(line)]
+    for i in hits:  # a contiguous cut holding every matched term reads best
+        cut = bounded('\n'.join(lines[i:]), budget)
+        if matched & code_words(content) <= code_words(cut):
+            return i, cut
+    # No single cut fits them all: the first line of each term, in order, each clipped around the
+    # terms it carries. Whole lines cut once let a long line hide the next term; clipping around one
+    # term per line hid a second term on that same line (Codex reviews, 2026-09-26).
+    picked, seen = [], set()
+    for i in hits:
+        new = (matched & code_words(lines[i])) - seen
+        if new:
+            spots = sorted(filter(None, (_word_at(lines[i], t) for t in new))) or [(0, 0)]
+            picked.append((i, spots))
+            seen |= new
+    if not picked:
+        return 0, bounded(content, budget)
+    room = budget - len('\n…\n'.encode()) * (len(picked) - 1)
+    size = lambda i, s, e: len(lines[i][s:e].encode())
+    spans = [(i, spots[0][0], max(e for _, e in spots)) for i, spots in picked]
+    if sum(size(*span) for span in spans) > room:  # all terms cannot fit: keep each line's first
+        spans = [(i, spots[0][0], spots[0][1]) for i, spots in picked]
+    pad = max(0, room - sum(size(*span) for span in spans)) // len(spans)
+    parts = [_around(lines[i], s, e, size(i, s, e) + pad) for i, s, e in spans]
+    return picked[0][0], bounded('\n…\n'.join(parts), budget)
+
+
+def _word_at(line, term):
+    """(start, end) in `line` of the first place `term` stands as a code_words() token, or None.
+    A raw find('beta') hit `betamax` and left the real `beta` out of the excerpt (Codex review)."""
+    folded, origin = [], []
+    for i, char in enumerate(line):
+        for c in unicodedata.normalize('NFKD', char.casefold()):
+            if not unicodedata.combining(c):
+                folded.append(c)
+                origin.append(i)
+    # The same steps as tokens() + code_words(), with offsets kept: a separately written regex
+    # drifted from them twice (`betamax`, then `-beta` / `beta-`).
+    for m in re.finditer(r'[\w.-]+', ''.join(folded)):
+        start = m.start() + len(m.group()) - len(m.group().lstrip('.-'))
+        word = m.group().strip('.-')
+        pieces = [(0, word)] if word == term else []
+        at = 0
+        for part in word.split('.'):
+            pieces.append((at, part))
+            at += len(part) + 1
+        for offset, piece in pieces:
+            if piece == term:
+                return origin[start + offset], origin[start + offset + len(piece) - 1] + 1
+    return None
+
+
+def _around(line, start, end, allowed):
+    """Widest slice of `line` holding [start, end) within `allowed` UTF-8 bytes, grown both ways."""
+    used = len(line[start:end].encode())
+    while True:
+        grew = False
+        if start > 0 and used + len(line[start - 1].encode()) <= allowed:
+            start, used, grew = start - 1, used + len(line[start - 1].encode()), True
+        if end < len(line) and used + len(line[end].encode()) <= allowed:
+            end, used, grew = end + 1, used + len(line[end].encode()), True
+        if not grew:
+            return line[start:end]
 
 def _quote_form(text):
     # Formatting only: markdown marks, dash/arrow/quote glyphs, whitespace, case.
@@ -153,6 +248,52 @@ def bounded(text, budget):
     return text.encode('utf-8')[:max(0, budget)].decode('utf-8', errors='ignore')
 
 
+# RAG plan T1.3: the SDK reference is lexical only, in SQLite FTS5 (external content).
+SDK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS docs(
+  id INTEGER PRIMARY KEY, source TEXT UNIQUE, revision TEXT, collection TEXT,
+  project TEXT, kind TEXT, domain TEXT, verified TEXT, indexed_at TEXT);
+CREATE TABLE IF NOT EXISTS chunks(
+  id INTEGER PRIMARY KEY, doc_id INTEGER REFERENCES docs(id) ON DELETE CASCADE,
+  line INTEGER, end_line INTEGER, heading TEXT, content TEXT);
+CREATE INDEX IF NOT EXISTS chunks_doc ON chunks(doc_id);
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+  heading, content, content='chunks', content_rowid='id',
+  tokenize='unicode61 remove_diacritics 2');
+CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+  INSERT INTO chunks_fts(rowid, heading, content) VALUES (new.id, new.heading, new.content); END;
+-- T3.2: embeddings per chunk. In the shared schema (not memory-search.py) so the cascade always
+-- exists: SQLite reuses a deleted INTEGER PRIMARY KEY, and an orphan vector would silently attach
+-- to the NEW chunk that inherits its id.
+CREATE TABLE IF NOT EXISTS vectors(
+  chunk_id INTEGER PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE, model TEXT, dim INTEGER, blob BLOB);
+CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+  INSERT INTO chunks_fts(chunks_fts, rowid, heading, content) VALUES ('delete', old.id, old.heading, old.content); END;
+"""
+
+
+def sdk_chunks(text):
+    """[(line, end_line, heading, content)], 1-based lines. One chunk per `##` section;
+    a section over 60 lines is cut every 40 with 4 lines of overlap. Frontmatter is skipped."""
+    lines = text.splitlines()
+    start = 0
+    if lines and lines[0] == '---':
+        start = next((i + 1 for i in range(1, len(lines)) if lines[i] == '---'), 0)
+    title = next((l[2:].strip() for l in lines[start:] if l.startswith('# ')), '')
+    bounds = [i for i in range(start, len(lines)) if lines[i].startswith('## ')]
+    # A section of only the title and blanks is dropped: every heading already carries the
+    # title, and BM25 would rank that near-empty chunk first for any object-name query.
+    sections = [(a, b) for a, b in zip([start] + bounds, bounds + [len(lines)])
+                if any(l.strip() and not l.startswith('# ') for l in lines[a:b])]
+    chunks = []
+    for a, b in sections:
+        heading = title + (' > ' + lines[a][3:].strip() if lines[a].startswith('## ') else '')
+        for s in ([a] if b - a <= 60 else range(a, max(a + 1, b - 4), 36)):
+            e = b if b - a <= 60 else min(s + 40, b)
+            chunks.append((s + 1, e, heading, '\n'.join(lines[s:e])))
+    return chunks
+
+
 class Memory:
     def __init__(self, root=None):
         self.root = Path(root or os.environ.get('AI_MEMORY_HOME') or Path.home() / '.claude').resolve()
@@ -174,6 +315,34 @@ class Memory:
                 re.fullmatch(r'projects/[^/]+/context/(?:[^/]+\.md|(?:topics|memory|checkpoints)/.+\.md)', relative)):
             raise ValueError('writes are restricted to curated Markdown')
         return path
+
+    def stored(self, path):
+        """True when path lies under the root with no symlink between root and file.
+        A link anywhere on the way (file, topics/, context/, a project dir) could
+        point the read outside the store, even one aimed inside today."""
+        try:
+            parts = Path(path).relative_to(self.root).parts
+        except ValueError:
+            return False
+        return '..' not in parts and not any(self.root.joinpath(*parts[:i + 1]).is_symlink() for i in range(len(parts)))
+
+    def read_stored(self, path):
+        """Store-confined read for everything that reaches a model or the context:
+        None for anything outside the store or behind a symlink (the doctor reports those)."""
+        if not self.stored(path):
+            return None
+        # ponytail: parents are checked then opened (TOCTOU); only the final hop is atomic via
+        # O_NOFOLLOW. Closing it needs openat() per component; racing it needs store write access.
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                return None
+            raise
+        with os.fdopen(fd, 'rb') as stream:
+            return stream.read().decode('utf-8')
 
     @contextlib.contextmanager
     def lock(self):
@@ -279,8 +448,6 @@ class Memory:
                     raise ValueError('recovery conflict; inspect journal ' + journal.name)
             for c in record['changes']:
                 atomic(self.path(c['path']), c['text'])
-                json_write(self.state / 'dirty' / (digest(c['path']) + '.json'),
-                           {'path': c['path'], 'sha256': c['after_sha256'], 'transaction': record['id']})
             record['status'] = 'committed'
             record['recovered_at'] = now()
             json_write(journal, record)
@@ -303,25 +470,15 @@ class Memory:
                 if (digest(current) if current is not None else None) != c['before_sha256']:
                     raise ValueError('external edit during transaction; inspect journal ' + transaction)
                 atomic(self.path(c['path']), c['text'])
-                json_write(self.state / 'dirty' / (digest(c['path']) + '.json'),
-                           {'path': c['path'], 'sha256': c['after_sha256'], 'transaction': transaction})
             record['status'] = 'committed'
             record['committed_at'] = now()
             json_write(journal, record)
-            if self.config.get('post_write_index', False):
-                # Detached optional worker; writes and lexical recall never wait
-                # for embeddings. The worker lock coalesces concurrent launches.
-                try:
-                    with (self.state / 'index.log').open('ab') as log:
-                        subprocess.Popen([sys.executable, str(CODE / 'scripts/memory-maintain.py'), 'index',
-                                          '--root', str(self.root)], stdin=subprocess.DEVNULL, stdout=log,
-                                         stderr=log, start_new_session=True)
-                except OSError as exc:
-                    print('Semantic update queued but worker could not start: ' + str(exc), file=sys.stderr)
             return {'transaction': transaction, 'changed': [c['path'] for c in changes]}
 
     def roots(self, cwd, scope='project', domain=None, collection='curated'):
-        if scope not in ('all', 'project') or collection not in ('curated', 'transcripts'):
+        if collection == 'sdk':
+            return [(self.root / 'references' / '_md', 'shared/sdk', 'sdk')]
+        if scope not in ('all', 'project') or collection not in ('curated', 'transcripts', 'checkpoints'):
             raise ValueError('invalid retrieval scope or collection')
         if domain and not re.fullmatch(r'[a-zA-Z0-9_-]+', domain):
             raise ValueError('invalid domain')
@@ -330,6 +487,12 @@ class Memory:
         roots = []
         if collection == 'transcripts':
             roots.extend((p / 'transcripts', p.parent.name, 'transcript') for p in projects)
+        elif collection == 'checkpoints':
+            # Out of `curated` since 2026-09-20: checkpoints are conversation prose, so they
+            # overlap heavily with any query and outrank curated pages. Measured: two absent
+            # benchmark queries went 1.65/1.66 -> 3.30/3.07 in one day, topped by checkpoints
+            # of the very session that wrote them. Searchable, but only when asked for.
+            roots.extend((p / 'checkpoints', p.parent.name, 'checkpoint') for p in projects)
         else:
             roots.extend((p, p.parent.name, 'project') for p in projects)
             roots.append((self.root / 'context', 'shared', 'shared'))
@@ -341,64 +504,189 @@ class Memory:
         seen = set()
         for root, project, kind in self.roots(cwd, scope, domain, collection):
             for path in sorted(root.rglob('*.md')):
-                if collection != 'transcripts' and 'transcripts' in path.relative_to(root).parts:
+                parts = path.relative_to(root).parts
+                if collection != 'transcripts' and 'transcripts' in parts:
                     continue
-                if path.is_symlink() or not path.resolve().is_relative_to(self.root) or path in seen:
+                if collection != 'checkpoints' and 'checkpoints' in parts:
+                    continue
+                if not self.stored(path) or path in seen:
                     continue
                 seen.add(path)
                 yield path, project, kind
 
-    def search(self, query, cwd, scope='project', domain=None, limit=5, session=None, collection='curated', log=True):
+    def search(self, query, cwd, scope='project', domain=None, limit=5, session=None, collection='curated', log=True, min_terms=1):
+        if collection == 'sdk':
+            return self.search_fts(query, limit, session, log)
         started = time.monotonic()
-        terms = set(tokens(query))
-        hits = []
+        sequence = tokens(query)
+        terms = set(sequence)
+        hits, idf = [], {}
         if terms:
+            windows, df, n_docs = [], {}, 0
             for path, project, kind in self.documents(cwd, scope, domain, collection):
-                text = read(path)
+                text = self.read_stored(path)
                 if not text:
                     continue
+                n_docs += 1
                 # Complete headings/paragraphs retain source line numbers. Long
                 # sections are found by matching windows, then read by source ID.
                 lines = text.splitlines()
+                # RAG plan T1.4: frontmatter `verified:` is the applicability signal; absent -> None.
+                head = re.match(r'---\n(.*?)\n---', text, re.S)
+                verified = next(iter(re.findall(r'^verified:\s*(\S+)', head.group(1), re.M)), None) if head else None
+                in_doc = set()
                 for start in range(0, len(lines), 24):
                     content = '\n'.join(lines[start:start + 32])
                     words = tokens(content)
                     common = terms.intersection(words)
-                    if not common:
-                        continue
-                    score = sum(1 + math.log1p(words.count(w)) for w in common) / math.sqrt(max(1, len(words)) / 50)
-                    score *= len(common) / len(terms)
-                    if kind == 'knowledge':
-                        score *= 1.15
-                    rel = str(path.relative_to(self.root))
-                    hits.append({'id': digest(rel + ':' + str(start + 1) + ':' + digest(text))[:24],
-                                 'source': rel, 'project': project, 'kind': kind,
-                                 'line': start + 1, 'end_line': min(start + 32, len(lines)),
-                                 'revision': digest(text), 'score': round(score, 4),
-                                 'matched_terms': sorted(common), 'content': redact(content)})
+                    if common:
+                        in_doc |= common
+                        windows.append((path, project, kind, text, lines, start, content, words, common, verified))
+                for w in in_doc:
+                    df[w] = df.get(w, 0) + 1
+            # IDF (BM25 form), RAG plan T2.1: without it a token in most of the corpus
+            # ("sap", "b1") weighed like a rare one, and an off-topic query scored 3.48 on
+            # those two alone, above real hits. Measured on the Stage 0 benchmark 2026-09-21.
+            idf = {w: math.log(1 + (n_docs - df.get(w, 0) + 0.5) / (df.get(w, 0) + 0.5)) for w in terms}
+            # A span is the best of dozens of sub-queries, so it must beat the floor by a margin: corpus
+            # policy calibrated on the bench like the floor, so it lives in config; code default 0 = off.
+            discount = float(self.config.get('span_discount', 0))
+            positions = {}
+            for i, w in enumerate(sequence):
+                positions.setdefault(w, []).append(i)
+            for path, project, kind, text, lines, start, content, words, common, verified in windows:
+                norm = math.sqrt(max(1, len(words)) / 50)
+                gain = {w: idf[w] * (1 + math.log1p(words.count(w))) for w in common}
+                score = sum(gain.values()) / norm * len(common) / len(terms)
+                if discount and len(terms) > SPAN_WIDTH and len(common) >= SPAN_TERMS:
+                    score = max(score, discount * _best_span(sequence, positions, gain) / norm)
+                if kind == 'knowledge':
+                    score *= 1.15
+                rel = str(path.relative_to(self.root))
+                hits.append({'id': digest(rel + ':' + str(start + 1) + ':' + digest(text))[:24],
+                             'source': rel, 'project': project, 'kind': kind,
+                             'line': start + 1, 'end_line': min(start + 32, len(lines)),
+                             'revision': digest(text), 'score': round(score, 4),
+                             'matched_terms': sorted(common), 'verified': verified, 'content': redact(content)})
         hits.sort(key=lambda x: (-x['score'], x['source'], x['line']))
         selected, sources = [], set()
         for hit in hits:
-            if hit['source'] in sources:
+            # Before the limit: matched-term count does not follow score order, so
+            # filtering after truncation let one-term hits hide a valid later one.
+            if hit['source'] in sources or len(hit['matched_terms']) < min_terms:
                 continue
             selected.append(hit)
             sources.add(hit['source'])
             if len(selected) >= limit:
                 break
         result = {'request_id': uuid.uuid4().hex, 'scope': scope, 'collection': collection,
-                  'engine': 'lexical', 'results': selected, 'elapsed_ms': round((time.monotonic() - started) * 1000)}
+                  'engine': 'lexical', 'results': selected, 'idf': idf, 'elapsed_ms': round((time.monotonic() - started) * 1000)}
         if log:
-            self.event({'event': 'search', 'request_id': result['request_id'], 'session': session,
-                        'query_hash': digest(query), 'scope': scope, 'collection': collection,
-                        'elapsed_ms': result['elapsed_ms'],
-                        'hits': [{k: v for k, v in h.items() if k != 'content'} for h in selected]})
+            self.log_search(result, query, session)
         return result
+
+    def sdk_db(self, create=False):
+        path = self.state / 'index.sqlite'
+        if not create and not path.exists():
+            raise ValueError('sdk index not built; run scripts/memory-index.py --collection sdk')
+        self.state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        db = sqlite3.connect(path, timeout=30)
+        # 16 KB pages: a 2 KB float16 vector row plus overhead took a whole 4 KB page (101 MB for 50 MB of
+        # vectors, 2026-09-27). Only applies to a new file; an existing one keeps its size until VACUUM.
+        db.execute('PRAGMA page_size=16384')
+        db.execute('PRAGMA journal_mode=WAL')
+        db.execute('PRAGMA foreign_keys=ON')  # the vectors cascade depends on it (off by default per connection)
+        db.executescript(SDK_SCHEMA)
+        return db
+
+    def index_sdk(self):
+        return self.index_collection('sdk')
+
+    def index_collection(self, collection):
+        """Reindex one collection into index.sqlite by revision: changed docs only, vanished docs
+        removed. `sdk` = references/_md (T1.3); `curated`/`transcripts` = the documents() of scope
+        `all` (RAG plan T3.1), chunked the same way so lexical and vector hits share chunk ids.
+        No index.lock: SQLite locks itself."""
+        if collection == 'sdk':
+            (base, project, kind), = self.roots(None, collection='sdk')
+            items = [(path, project, kind) for path in sorted(base.rglob('*.md'))]
+        elif collection in ('curated', 'transcripts'):
+            items = list(self.documents(str(self.root), 'all', None, collection))
+        else:
+            raise ValueError('collection not indexable: ' + str(collection))
+        db = self.sdk_db(create=True)
+        seen, changed = set(), 0
+        with db:
+            known = dict(db.execute('SELECT source, revision FROM docs WHERE collection = ?', (collection,)))
+            for path, project, kind in items:
+                text = self.read_stored(path)
+                if text is None:
+                    continue
+                rel = str(path.relative_to(self.root))
+                seen.add(rel)
+                if known.get(rel) == digest(text):
+                    continue
+                db.execute('DELETE FROM chunks WHERE doc_id IN (SELECT id FROM docs WHERE source = ?)', (rel,))
+                db.execute('DELETE FROM docs WHERE source = ?', (rel,))
+                doc = db.execute('INSERT INTO docs(source, revision, collection, project, kind, indexed_at) VALUES (?, ?, ?, ?, ?, ?)',
+                                 (rel, digest(text), collection, project, kind, now())).lastrowid
+                db.executemany('INSERT INTO chunks(doc_id, line, end_line, heading, content) VALUES (?, ?, ?, ?, ?)',
+                               [(doc, *chunk) for chunk in sdk_chunks(text)])
+                changed += 1
+            gone = set(known) - seen
+            for rel in gone:
+                db.execute('DELETE FROM chunks WHERE doc_id IN (SELECT id FROM docs WHERE source = ?)', (rel,))
+                db.execute('DELETE FROM docs WHERE source = ?', (rel,))
+        db.close()
+        return {'indexed': len(seen), 'changed': changed, 'removed': len(gone)}
+
+    def search_fts(self, query, limit=5, session=None, log=True, collection='sdk', allowed=None, scope='all'):
+        # `allowed` = the caller's permitted sources (curated/transcripts scope, T3.1); sdk keeps its prefix guard.
+        started = time.monotonic()
+        terms = set(tokens(query))
+        selected = []
+        if terms:
+            db = self.sdk_db()
+            # Quote every term: FTS5 reads `-` and `.` as operators.
+            rows = db.execute(
+                'SELECT d.source, d.project, d.kind, d.revision, c.line, c.end_line, c.heading, c.content, '
+                'bm25(chunks_fts) AS score FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid '
+                'JOIN docs d ON d.id = c.doc_id WHERE chunks_fts MATCH ? AND d.collection = ? ORDER BY score',
+                (' OR '.join('"' + t + '"' for t in sorted(terms)), collection))
+            sources = set()
+            # Not a SQL LIMIT: rows are chunks, and one source may hold many of the best ones.
+            for source, project, kind, revision, line, end, heading, content, score in rows:
+                inside = source.startswith('references/_md/') if collection == 'sdk' else source in (allowed or ())
+                if source in sources or not inside:
+                    continue
+                sources.add(source)
+                words = code_words(heading + ' ' + content)
+                selected.append({'id': digest(source + ':' + str(line) + ':' + revision)[:24],
+                                 'source': source, 'project': project, 'kind': kind, 'line': line,
+                                 'end_line': end, 'revision': revision, 'score': round(-score, 4),
+                                 'matched_terms': sorted(terms & words), 'verified': None,
+                                 'content': redact(content)})
+                if len(selected) >= limit:
+                    break
+            db.close()
+        result = {'request_id': uuid.uuid4().hex, 'scope': scope, 'collection': collection, 'engine': 'fts5',
+                  'results': selected, 'elapsed_ms': round((time.monotonic() - started) * 1000)}
+        if log:
+            self.log_search(result, query, session)
+        return result
+
+    def log_search(self, result, query, session=None):
+        # Separate so `mem search --auto` logs only the engine it kept (one query, one event).
+        self.event({'event': 'search', 'request_id': result['request_id'], 'session': session,
+                    'query_hash': digest(query), 'scope': result['scope'], 'collection': result.get('collection'),
+                    'engine': result.get('engine'), 'elapsed_ms': result['elapsed_ms'],
+                    'hits': [{k: v for k, v in h.items() if k != 'content'} for h in result['results']]})
 
     def event(self, event):
         # One immutable file per event avoids interleaved JSONL writes.
         json_write(self.state / 'usage' / (uuid.uuid4().hex + '.json'), {'at': now(), **event})
 
-    def expand(self, request_id, result_id, session=None):
+    def expand(self, request_id, result_id, session=None, log_open=True):
         if not re.fullmatch(r'[a-f0-9]{32}', request_id):
             raise ValueError('invalid request ID')
         for path in (self.state / 'usage').glob('*.json'):
@@ -408,25 +696,44 @@ class Memory:
             hit = next((h for h in event['hits'] if h['id'] == result_id), None)
             if not hit:
                 raise ValueError('result does not belong to request')
-            source = (self.root / hit['source']).resolve()
-            if not source.is_relative_to(self.root):
+            source = self.root / hit['source']
+            if not self.stored(source):
                 raise ValueError('invalid source')
-            text = read(source)
+            text = self.read_stored(source)
             if text is None or digest(text) != hit['revision']:
                 raise ValueError('source changed; search again')
-            self.event({'event': 'open', 'request_id': request_id, 'result_id': result_id, 'session': session or event.get('session')})
+            if log_open:
+                self.event({'event': 'open', 'request_id': request_id, 'result_id': result_id, 'session': session or event.get('session')})
             return {'source': hit['source'], 'project': hit['project'], 'revision': hit['revision'], 'content': redact(text)}
         raise ValueError('unknown request')
 
-    def feedback(self, request_id, result_id, outcome, session=None):
+    def feedback(self, request_id, result_id, outcome, session=None, automatic=False):
         if outcome not in ('relevant', 'irrelevant', 'used', 'code_passed', 'code_failed'):
             raise ValueError('invalid feedback outcome')
-        # Membership and revision checks are identical to expansion. Feedback is
-        # explicit self-report, never inferred from elapsed time.
-        hit = self.expand(request_id, result_id, session)
+        # Membership and revision checks are identical to expansion. Manual feedback is
+        # explicit self-report; automatic (lint verdict, RAG plan T4.3) logs no `open`,
+        # or every linted edit would count as a result someone chose to read.
+        hit = self.expand(request_id, result_id, session, log_open=not automatic)
         self.event({'event': 'feedback', 'request_id': request_id, 'result_id': result_id,
-                    'outcome': outcome, 'session': session, 'revision': hit['revision']})
+                    'outcome': outcome, 'session': session, 'revision': hit['revision'], 'automatic': automatic})
         return {'recorded': outcome}
+
+    def recent_rag_hits(self, file_path, seconds=120):
+        """'request:result' refs that rag-on-edit injected for file_path in the last `seconds`
+        (latest event wins). mtime filter before parsing: usage/ is one file per event."""
+        # ponytail: stats every usage file (2,311 on 2026-09-26, ~ms); index by path if it grows 100x.
+        cutoff, latest = time.time() - seconds, {}
+        for path in (self.state / 'usage').glob('*.json'):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    continue
+            except FileNotFoundError:
+                continue
+            event = json_read(path, {})
+            if event.get('event') == 'rag_edit' and event.get('file_path') == str(file_path) \
+                    and event.get('at', '') >= latest.get('at', ''):
+                latest = event
+        return latest.get('refs', [])
 
     def snapshot(self, cwd, budget=8000):
         if budget < 512:
@@ -435,7 +742,7 @@ class Memory:
         ctx = self.root / store['relative'] / 'context'
         today = dt.date.today()
         candidates = [ctx / 'MEMORY.md', self.root / 'context/USER.md', self.root / 'context/MEMORY.md']
-        checkpoints = sorted((ctx / 'checkpoints').glob('*.md'), key=lambda p: p.stat().st_mtime, reverse=True)
+        checkpoints = sorted((ctx / 'checkpoints').glob('*.md'), key=lambda p: p.lstat().st_mtime, reverse=True)
         candidates.extend(checkpoints[:1])
         candidates.extend(ctx / 'memory' / ((today - dt.timedelta(days=i)).isoformat() + '.md') for i in range(2))
         manifest = {'version': VERSION, 'project': store['anchor'], 'included': [], 'omitted': []}
@@ -444,7 +751,7 @@ class Memory:
         output = bounded(prefix, 400)
         available = budget - len(output.encode()) - len(suffix.encode())
         for path in candidates:
-            text = read(path)
+            text = self.read_stored(path)
             if not text:
                 continue
             rel = str(path.relative_to(self.root))
@@ -493,6 +800,16 @@ class Memory:
             if not text or not quote_supported(quote, source) or len(text) > 4000:
                 rejected += 1
                 continue
+            # Same treatment for a fact that trips the secret heuristic: drop it, never
+            # fail the source. `redact` is content-agnostic, so a checkpoint ABOUT auth
+            # headers trips it on prose — `Bearer <token>`, `X-API-Token: <valor>` (the
+            # TOKEN rule is not left-anchored, so it matches inside a header name).
+            # Aborting there re-alerted every night for the 35 days the source stays
+            # eligible (a Node integration project, 2026-09-19). The check in `apply` stays
+            # as the backstop: nothing flagged is written either way.
+            if redact(text) != text or redact(quote) != quote:
+                rejected += 1
+                continue
             marker = '<!-- fact:' + digest(text) + ' -->'
             if marker in old + additions:
                 continue
@@ -524,6 +841,17 @@ class Memory:
         return dict(self.apply({'version': VERSION, 'changes': changes}), rejected=rejected)
 
 
+def rag_report(events):
+    """RAG plan T4.3: how often rag-on-edit fires, what it costs, how often lint fails after it."""
+    rags = [e for e in events if e.get('event') == 'rag_edit']
+    sizes = sorted(e['injected_bytes'] for e in rags if e.get('injected_bytes'))
+    auto = [e['outcome'] for e in events if e.get('event') == 'feedback' and e.get('automatic')]
+    judged = auto.count('code_passed') + auto.count('code_failed')
+    return {'fired': len(rags), 'injected': len(sizes),
+            'injected_bytes_p50': sizes[len(sizes) // 2] if sizes else None,
+            'code_failed_share': round(auto.count('code_failed') / judged, 3) if judged else None}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root')
@@ -533,7 +861,7 @@ def main():
     search.add_argument('--cwd', default=os.getcwd())
     search.add_argument('--scope', choices=['project', 'all'], default='project')
     search.add_argument('--domain')
-    search.add_argument('--collection', choices=['curated', 'transcripts'], default='curated')
+    search.add_argument('--collection', choices=['curated', 'transcripts', 'checkpoints'], default='curated')
     search.add_argument('--limit', '--top-k', '-k', type=int, default=5)
     search.add_argument('--session')
     expand = commands.add_parser('expand')
@@ -604,8 +932,12 @@ def main():
         opens = {(e.get('request_id'), e.get('result_id')) for e in events if e.get('event') == 'open'}
         used = sum(any((r, h['id']) in opens for h in e['hits']) for r, e in searches.items())
         result = {'searches': len(searches), 'searches_with_open': used,
-                  'explicit_feedback': {outcome: sum(e.get('event') == 'feedback' and e.get('outcome') == outcome for e in events)
+                  # Automatic lint feedback (T4.3) lives in rag_edit; counting it here made "explicit" a lie
+                  # (found by the GLM agent reviewing its own commit, 2026-09-26).
+                  'explicit_feedback': {outcome: sum(e.get('event') == 'feedback' and e.get('outcome') == outcome
+                                                      and not e.get('automatic') for e in events)
                                         for outcome in ('relevant', 'irrelevant', 'used', 'code_passed', 'code_failed')},
+                  'rag_edit': rag_report(events),
                   'note': 'Opening a result measures engagement, not factual correctness.'}
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

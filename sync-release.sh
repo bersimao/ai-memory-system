@@ -45,18 +45,24 @@ MANIFEST=(
   cron/backfill-daily-logs.sh
   cron/jsonl-to-transcript.py
   cron/jsonl-to-transcript.test.py
-  cron/memsearch-index.sh
+  cron/memory-index.sh
+  cron/memory-index.test.sh
   cron/alert.sh
   cron/check-caps.sh
   cron/check-caps.test.sh
   cron/store-cap.sh
   cron/check-hooks.sh
-  cron/check-mem-review.sh
   scripts/mem
   scripts/mem.test.sh
-  scripts/llm-run
   scripts/skill-grep
   scripts/skill-grep.test.sh
+  scripts/memory-semantic-daemon.py
+  scripts/memory-semantic-daemon.test.py
+  scripts/memory-weekly-check.py
+  scripts/memory-weekly-check.test.py
+  # The weekly check drives it; its cases and runs stay private (release decision 2026-09-20).
+  scripts/mem-bench.py
+  scripts/mem-bench.test.py
 )
 
 # Repo-native files (they do not come from ~/.claude) the guard also scans.
@@ -157,10 +163,10 @@ if [ "$mode" = --from-home ]; then
   ctx='[.]claude'
   cfgtok="CLAUDE[.]md|settings[.]json|['\"/](commands|skills|agents)['\"/]"
   # Files that genuinely OPERATE on the config surface, named where a reviewer sees
-  # them. memsearch-index.sh was passing only BECAUSE of the quoting gap above —
+  # them. memory-index.sh was passing only BECAUSE of the quoting gap above —
   # closing the gap without listing it here would have aborted the real sync.
   CONFIG_OK=(cron/check-hooks.sh          # reads the settings file to verify hooks
-             cron/memsearch-index.sh)     # indexes the skills' knowledge/references
+             cron/memory-index.sh)     # indexes the skills' knowledge/references
   for f in "${scan[@]}"; do
     rel="${f#$DST/}"
     case "$rel" in hooks/*|cron/*|scripts/*) ;; *) continue ;; esac

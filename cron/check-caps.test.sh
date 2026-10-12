@@ -19,7 +19,7 @@ run() {
   local capfile="$1" n="$2" home ctx rc
   home=$(mktemp -d)
   ctx="$home/.claude/projects/-fake-store/context"
-  mkdir -p "$ctx" "$home/.memsearch" "$home/.claude/context"
+  mkdir -p "$ctx" "$home/.claude/logs" "$home/.claude/context"
   python3 -c "import sys;open(sys.argv[1],'w').write('x'*int(sys.argv[2]))" "$ctx/MEMORY.md" "$n"
   # RAW=1 makes printf interpret escapes, which is the only way to actually put
   # a NUL byte in the file — the *_raw helpers below rely on it.
@@ -33,7 +33,7 @@ run() {
   # day. Twelve green tests missed it because run() threw stderr away.
   STDERR=$(AI_MEMORY_HOME="$home/.claude" HOME="$home" bash "$SCRIPT" 2>&1 >/dev/null)
   rc=$?
-  LOGLINE=$(grep -oE '[0-9]+/[0-9]+' "$home/.memsearch/cron.log" 2>/dev/null | tail -1)
+  LOGLINE=$(grep -oE '[0-9]+/[0-9]+' "$home/.claude/logs/cron.log" 2>/dev/null | tail -1)
   rm -rf "$home"
   return $rc
 }

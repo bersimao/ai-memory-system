@@ -122,7 +122,8 @@ FACTS_PROMPT = ('Return {"facts":[{"text":"...","quote":"..."}]}. Extract only k
                 'symbols may be dropped). Return an empty list when nothing qualifies. At most 12 facts. These are '
                 'candidates, not verified truth.')
 
-# Account-wide limits: every following call fails the same way (see scripts/llm-run).
+# Account-wide limits: every following call fails the same way, so the batch stops
+# (2026-08-24: a backfill kept going past the limit, 57 identical dead calls).
 QUOTA = re.compile(r'cc_cli_limit_message|spend limit|usage limit|limit.{0,80}(resets|will reset|reset at)', re.I | re.S)
 
 
@@ -138,11 +139,21 @@ def maintain(memory, mode, limit=40):
     horizon = dt.datetime.now().timestamp() - 35 * 86400
     candidates = []
     for ctx in (memory.root / 'projects').glob('*/context'):
+        # /tmp/claude-<uid>/ is where Claude Code keeps session scratchpads, so a store encoded from
+        # it is a headless test session, never a project: its pages were injected into real sessions
+        # as recall noise (2026-10-12). This is the one place every writer's transcript or checkpoint
+        # passes before becoming a memory page. Not all of /tmp: a repo someone keeps there is real.
+        if ctx.parent.name.startswith('-tmp-claude-'):
+            continue
         if mode == 'backfill':
             sources = (ctx / 'transcripts').glob('*.md')
         else:
             sources = [*(ctx / 'memory').glob('*.md'), *(ctx / 'checkpoints').glob('*.md')]
         for path in sources:
+            # Distill/backfill ship the source to a model: a symlink here would send an
+            # outside file off the machine. The doctor reports what this skips.
+            if not memory.stored(path):
+                continue
             mtime = path.stat().st_mtime
             if mtime < horizon:
                 continue
@@ -152,8 +163,10 @@ def maintain(memory, mode, limit=40):
             # facts under different wording (fact markers hash the text).
             if mode == 'distill' and dt.date.fromtimestamp(mtime) >= today:
                 continue
-            if mode == 'backfill' and read(memory.path(str(ctx.relative_to(memory.root) / 'memory' / path.name))):
-                continue  # already logged: skip before reading, so its size is never reported
+            # Already logged: skip before reading, so its size is never reported. read_stored,
+            # not Memory.path: a symlinked log dir must fail that item below, not abort the run.
+            if mode == 'backfill' and memory.read_stored(ctx / 'memory' / path.name):
+                continue
             candidates.append((mtime, ctx, path))
     # Newest first across ALL stores. Alphabetical store order spent all 41 distill
     # transactions up to 2026-09-17 on one store and never reached the others.
@@ -162,7 +175,7 @@ def maintain(memory, mode, limit=40):
     for _, ctx, path in candidates:
         if processed >= limit:
             break
-        source = read(path)
+        source = memory.read_stored(path)
         if not source or len(source) > 180000:
             if source:
                 print('Skipped oversized source; split/review required: ' + str(path), file=sys.stderr)
@@ -181,7 +194,7 @@ def maintain(memory, mode, limit=40):
                 text = summary_markdown(obj['summary']) if isinstance(obj.get('summary'), str) else obj.get('summary')
                 if not isinstance(text, str) or not text.strip() or len(text) > 6000:
                     raise ValueError('invalid summary')
-                if read(path) != source:
+                if memory.read_stored(path) != source:
                     raise ValueError('source changed during extraction')
                 result = memory.apply({'version': VERSION, 'changes': [memory.change(target,
                     '<!-- candidate summary; source: ' + relative + '; revision: ' + digest(source) + ' -->\n' + redact(text) + '\n',
@@ -191,7 +204,7 @@ def maintain(memory, mode, limit=40):
                 facts = obj.get('facts')
                 if not isinstance(facts, list) or len(facts) > 12:
                     raise ValueError('invalid facts')
-                if read(path) != source:
+                if memory.read_stored(path) != source:
                     raise ValueError('source changed during extraction')
                 result = memory.facts(relative, facts)
         except Exception as exc:
@@ -208,54 +221,14 @@ def maintain(memory, mode, limit=40):
     return failures
 
 
-def reindex(memory):
-    import fcntl
-    import importlib.util
-    # Semantic search is optional. A lexical-only install still writes dirty
-    # receipts on every accepted write; without this gate the nightly index step
-    # failed on the memsearch import and every maintenance run alerted. Receipts
-    # stay queued (one per path, overwritten), so installing memsearch later
-    # indexes them on the next run.
-    if importlib.util.find_spec('memsearch') is None:
-        print('memsearch not installed; semantic indexing skipped (lexical search unaffected).')
-        return 0
-    from memory_core import semantic_db_owned_by
-    if not semantic_db_owned_by(memory.root):
-        print('semantic DB belongs to another memory root; indexing skipped (lexical search unaffected).')
-        return 0
-    memory.state.mkdir(parents=True, exist_ok=True)
-    with (memory.state / 'index.lock').open('a') as lock:
-        # Wait in this detached worker. Returning on contention would strand
-        # receipts when the lock holder is a search or full reconciliation.
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        while True:
-            receipts = sorted((memory.state / 'dirty').glob('*.json'))[:100]
-            if not receipts:
-                return 0
-            batch = [(receipt, json_read(receipt)) for receipt in receipts]
-            before = {item['path']: read(memory.path(item['path'])) for _, item in batch}
-            result = subprocess.run([sys.executable, str(Path(__file__).with_name('memory-index.py')), '--root', str(memory.root),
-                                    *[str(memory.path(item['path'])) for _, item in batch]],
-                                    capture_output=True, text=True, timeout=300)
-            if result.returncode:
-                print('Semantic indexing failed; pending receipts retained.', file=sys.stderr)
-                return 1
-            with memory.lock():
-                for receipt, item in batch:
-                    if before[item['path']] == read(memory.path(item['path'])) and json_read(receipt, {}) == item:
-                        receipt.unlink()
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['distill', 'backfill', 'curate', 'index'])
+    parser.add_argument('mode', choices=['distill', 'backfill', 'curate'])
     parser.add_argument('--root')
     parser.add_argument('--limit', type=int, default=40)
     args = parser.parse_args()
     memory = Memory(args.root)
     try:
-        if args.mode == 'index':
-            sys.exit(reindex(memory))
         failures = maintain(memory, args.mode, args.limit)
         if failures:
             # Every other source was processed; still fail so distill.sh alerts.

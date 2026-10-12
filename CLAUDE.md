@@ -68,7 +68,7 @@ add to the MANIFEST.
 
 `CONFIG_OK` in `sync-release.sh` lists the files that legitimately operate on the
 config surface — `cron/check-hooks.sh` (reads the settings file) and
-`cron/memsearch-index.sh` (indexes the skills' knowledge dirs). Both are covered by
+`cron/memory-index.sh` (indexes the skills' knowledge dirs). Both are covered by
 their own test cases: dropping either from the list must fail the suite, or the
 list decays into a place where things get quietly added.
 
@@ -77,7 +77,7 @@ list decays into a place where things get quietly added.
 ```
 hooks/    the SessionStart/Stop hooks (installed into ~/.claude/hooks/)
 cron/     scheduled maintenance: curate, distill, backfill, tripwires
-scripts/  mem (retrieval seam), llm-run (LLM calls with quota handling)
+scripts/  mem (retrieval seam), memory-maintain.py (LLM extraction with quota handling)
 docs/     retrieval-interface.md, model-agnostic.md
 migration/  one-shot scripts for store layout changes, kept for reference
 ```

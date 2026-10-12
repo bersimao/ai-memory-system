@@ -50,7 +50,7 @@ Caps are characters: USER 1,375; global MEMORY 4,000; project index 2,500 or its
 Use `mem split RELATIVE_PATH` when an index fills: preserve its full original in a topic page and keep a pointer;
 never compress facts to fit. Scheduled curation performs a lossless project-index split.
 Checkpoint and distilled candidate text is unverified until checked against its evidence.
-Accepted writes are immediately visible to lexical search; semantic updates are queued.
+Accepted writes are immediately visible to lexical search; semantic search sees them after the next index run.
 
 ## Checkpoints and diagnostics
 

@@ -3,7 +3,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { resolveAnchor, storeDir, encodeProjectPath, PROJECTS } = require('./project-store.js');
+const { resolveAnchor, storeDir, encodeProjectPath, demandServes, PROJECTS } = require('./project-store.js');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'store-test-'));
 const repo = path.join(tmp, 'repo');
@@ -26,6 +26,13 @@ assert.deepStrictEqual(resolveAnchor(loose), { dir: loose, source: 'cwd' });
 // ...and then the harness dir is trusted verbatim, since anchor === cwd
 const looseCc = path.join(PROJECTS, 'whatever-claude-code-picked');
 assert.strictEqual(storeDir(loose, path.join(looseCc, 's.jsonl')).dir, looseCc);
+
+// a multi-repo demand serves every component in `workdirs`, not only `workdir`
+const multi = { workdir: '/r/gmeg', workdirs: [{ workdir: '/r/gmeg' }, { workdir: '/r/lynus' }] };
+assert.ok(demandServes(multi, '/r/lynus'));
+assert.ok(demandServes(multi, '/r/gmeg'));
+assert.ok(!demandServes(multi, '/r/other'));
+assert.ok(!demandServes({ workdir: '' }, '/r/gmeg'));
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('ok');

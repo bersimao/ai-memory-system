@@ -20,7 +20,8 @@ before returning content. Old bare chunk hashes must be replaced by a new search
 
 Automatic prompt recall uses lexical search and includes expansion references. Try
 identifiers, synonyms, English/Portuguese alternatives, then `--semantic` on misses.
-The semantic adapter filters before retrieval and reranking and rejects stale text.
+The semantic adapter (`index.sqlite`: bge-m3 vectors fused by RRF with the lexical scan) filters by
+scope before ranking and rejects stale text.
 
 `mem feedback REQUEST_ID:RESULT_ID relevant|irrelevant|used|code_passed|code_failed`
 records explicit observations; `mem report` keeps them separate from result opens.

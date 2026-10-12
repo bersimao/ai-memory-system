@@ -87,7 +87,7 @@ out=$(run --from-home); rc=$?
 printf 'clean\n' > "$src/cron/distill.sh"; run --from-home >/dev/null 2>&1
 
 # 8 — legitimate uses of $HOME must not raise false positives.
-printf 'LOG="$HOME/.memsearch/cron.log"\n' >> "$src/cron/distill.sh"
+printf 'LOG="$HOME/.claude/logs/cron.log"\n' >> "$src/cron/distill.sh"
 out=$(run --from-home); rc=$?
 [ $rc -eq 0 ] && ok "legitimate \$HOME use is not a false positive" \
   || bad "false positive on legitimate \$HOME; rc=$rc"
@@ -163,16 +163,16 @@ out=$(run --from-home); rc=$?
   || bad "false positive on the exempted file; rc=$rc"
 printf 'clean\n' > "$src/cron/check-hooks.sh"; run --from-home >/dev/null 2>&1
 
-# 10a — the SECOND exempted file. memsearch-index.sh indexes the skills' knowledge
+# 10a — the SECOND exempted file. memory-index.sh indexes the skills' knowledge
 # dirs, and was passing the earlier guard only because of the quoting gap. Without
 # this case, dropping it from CONFIG_OK breaks nothing in the suite while breaking
 # the real sync.
-printf '  "%s"/skills/*/knowledge \\\n' "$D" >> "$src/cron/memsearch-index.sh"
+printf '  "%s"/skills/*/knowledge \\\n' "$D" >> "$src/cron/memory-index.sh"
 out=$(run --from-home); rc=$?
 [ $rc -eq 0 ] && ! grep -q ABORT <<<"$out" \
   && ok "the skills indexer may read the skills tree" \
-  || bad "false positive on memsearch-index.sh; rc=$rc"
-printf 'clean\n' > "$src/cron/memsearch-index.sh"; run --from-home >/dev/null 2>&1
+  || bad "false positive on memory-index.sh; rc=$rc"
+printf 'clean\n' > "$src/cron/memory-index.sh"; run --from-home >/dev/null 2>&1
 
 # 10c — the delimiters around commands|skills|agents are load-bearing. Those are
 # ordinary English words; without a quote or slash around them, any comment that

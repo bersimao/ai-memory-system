@@ -46,7 +46,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', required=True)
     parser.add_argument('--codex-home')
-    parser.add_argument('--semantic-updates', action='store_true')
     parser.add_argument('--scope', choices=['all', 'project'], default='project')
     args = parser.parse_args()
     root = Path(args.root).resolve()
@@ -58,8 +57,6 @@ if __name__ == '__main__':
     cfg = root / 'data/memory-system/config.json'
     current = json.loads(cfg.read_text()) if cfg.exists() else {}
     current['automatic_recall_scope'] = args.scope
-    if args.semantic_updates:
-        current['post_write_index'] = True
     cfg.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, name = tempfile.mkstemp(dir=cfg.parent)
     with os.fdopen(fd, 'w') as stream:

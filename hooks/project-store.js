@@ -74,12 +74,16 @@ const storeDir = (cwd, transcriptPath) => {
   return { dir: path.join(PROJECTS, encodeProjectPath(anchor.dir)), anchor };
 };
 
+// A demand lives in this anchor when its workdir, or any component in `workdirs`
+// (combined / multi-repo demands), is the anchor or nests with it.
+const demandServes = (d, anchor) =>
+  [d.workdir, ...(d.workdirs || []).map((w) => w.workdir)]
+    .some((w) => w && (isUnder(w, anchor) || isUnder(anchor, w)));
+
 // Demands registered against this anchor — the index of what lives in this repo.
 const demandsFor = (anchor) => {
   const reg = readJson(DEMANDS);
-  return ((reg && reg.demands) || []).filter(
-    (d) => d.workdir && (isUnder(d.workdir, anchor) || isUnder(anchor, d.workdir))
-  );
+  return ((reg && reg.demands) || []).filter((d) => demandServes(d, anchor));
 };
 
 const pin = (anchor, forDir) => {
@@ -90,7 +94,7 @@ const pin = (anchor, forDir) => {
   return map;
 };
 
-module.exports = { encodeProjectPath, resolveAnchor, storeDir, demandsFor, pin, isUnder, PROJECTS };
+module.exports = { encodeProjectPath, resolveAnchor, storeDir, demandsFor, demandServes, pin, isUnder, PROJECTS };
 
 if (require.main === module) {
   const argv = process.argv;
