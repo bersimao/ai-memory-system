@@ -13,7 +13,7 @@
 # Called from distill.sh; safe to run standalone. Never edits memory files.
 set -uo pipefail
 
-LOG="$HOME/.memsearch/cron.log"
+LOG="$HOME/.claude/logs/cron.log"
 MEM_ROOT="${AI_MEMORY_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"  # script lives in the memory root
 # Alerts go to ~/.claude/logs/alerts.log, never to the Obsidian INBOX; the
 # channel and the reason live in alert.sh. /end-of-day reads that log.

@@ -48,7 +48,7 @@ const previousLocalDate = (d) => {
 // found by semantic search alone from a query that never named the target).
 // The exception is what semantic search structurally cannot reach: yesterday's
 // log has no shared vocabulary to embed a similarity against, and a demand's
-// vault note lives outside the memsearch index entirely. Both are one lookup,
+// vault note lives outside the memory index entirely. Both are one lookup,
 // no new detection machinery. Deep/opportunistic cross-linking stays manual.
 const buildLinkHints = ({ projectDir, yesterday, demands }) => {
   const hints = [];

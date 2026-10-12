@@ -49,8 +49,7 @@ Use your `--root` path if it differs; the cron wrappers and the `mem` CLI derive
 memory root from their own location (an explicit `AI_MEMORY_HOME` still wins).
 `distill.sh` exits non-zero when maintenance fails, so cron and systemd see the failure.
 
-If you use semantic search, also schedule `cron/memsearch-index.sh` daily (the name is
-historical): it re-chunks changed pages and embeds what has no vector yet. Each
+If you use semantic search, also schedule `cron/memory-index.sh` daily: it re-chunks changed pages and embeds what has no vector yet. Each
 collection is capped at 2 hours per run, which fits a daily delta but not a first build
 of a large store, so do the first build by hand as shown above. The index belongs to its
 memory root, so two roots never share one.

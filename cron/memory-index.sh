@@ -6,21 +6,18 @@
 # Split, not score-weighted: transcripts outrank curated pages on raw vector
 # similarity (they restate the question verbatim), so one collection would bury
 # the authoritative answer (measured 2026-07-29).
-# The name and the ~/.memsearch/cron.log path are historical: memsearch itself was
-# retired on 2026-10-11 (RAG plan T3.4); the anacron line and five other cron
-# scripts still point at them.
 set -uo pipefail
 # Same root rule as distill.sh: the script lives inside the memory root, an
 # explicit AI_MEMORY_HOME still wins.
 R="${AI_MEMORY_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"
 # RAG plan T1.1/T1.3: generated pages + FTS5 sdk index.
 # A failure is logged and fails the run; it never skips the indexing below.
-mkdir -p "$HOME/.memsearch"
+mkdir -p "$HOME/.claude/logs"
 {
   AI_MEMORY_HOME="$R" /usr/bin/python3 "$R/cron/build-system-map.py" &&
   /usr/bin/python3 "$R/scripts/sdk-to-md.py" "$R" &&
   /usr/bin/python3 "$R/scripts/memory-index.py" --root "$R" --collection sdk
-} >>"$HOME/.memsearch/cron.log" 2>&1
+} >>"$HOME/.claude/logs/cron.log" 2>&1
 pre_rc=$?
 # RAG plan T3.2: chunks + bge-m3 vectors in index.sqlite (the `sqlite` engine). Daily, not
 # post-write (user, 2026-09-27): the lexical leg reads files live, so same-day pages are found anyway.
@@ -31,10 +28,10 @@ pre_rc=$?
 . "$R/cron/alert.sh"
 for coll in curated transcripts; do
   if ( ulimit -v 10000000; timeout 2h /usr/bin/python3 "$R/scripts/memory-index.py" --root "$R" --collection "$coll" ) \
-      >>"$HOME/.memsearch/cron.log" 2>&1; then
+      >>"$HOME/.claude/logs/cron.log" 2>&1; then
     alert_ok "SQLITE-INDEX ALERT $coll" "$coll reindexado e embutido" || pre_rc=1
   else
-    alert "SQLITE-INDEX ALERT $coll" "memory-index.py --collection $coll falhou (exit $?); vetores do motor sqlite parados. Ver ~/.memsearch/cron.log" || true
+    alert "SQLITE-INDEX ALERT $coll" "memory-index.py --collection $coll falhou (exit $?); vetores do motor sqlite parados. Ver ~/.claude/logs/cron.log" || true
     pre_rc=1
   fi
 done

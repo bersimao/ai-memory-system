@@ -48,7 +48,7 @@ out-of-quota message against the `QUOTA` pattern in `memory-maintain.py`. If it 
 match, a batch that runs out of quota fails call by call instead of stopping.
 
 Lexical retrieval sees accepted files immediately, even if embeddings are unavailable;
-semantic retrieval sees them after the next `cron/memsearch-index.sh` run. `mem report` separates search/open engagement and explicit relevance,
+semantic retrieval sees them after the next `cron/memory-index.sh` run. `mem report` separates search/open engagement and explicit relevance,
 use, and code-test outcomes. These are observations, not automatic quality judgments.
 
 Filesystem locking uses POSIX flock. Model portability does not imply native Windows
