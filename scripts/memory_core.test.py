@@ -613,6 +613,20 @@ class Tests(unittest.TestCase):
             maintain.maintain(self.memory, 'distill')
         gen.assert_not_called()
 
+    def test_temp_dir_stores_are_never_backfilled_or_distilled(self):
+        # A session run under /tmp is a headless test. Whoever wrote its transcript or checkpoint
+        # (Stop hook, jsonl extractor), it must not become a memory page: those were injected into
+        # real sessions and came back the morning after being removed (2026-10-12).
+        ctx = self.root / 'projects/-tmp-claude-1000-fixture/context'
+        stamp = __import__('time').time() - 86400
+        for folder in ('transcripts', 'checkpoints'):
+            atomic(ctx / folder / '2026-01-01.md', 'Canary decision because the hook test said so.\n')
+            os.utime(ctx / folder / '2026-01-01.md', (stamp, stamp))
+        with patch.object(maintain, 'generate') as gen:
+            maintain.maintain(self.memory, 'backfill')
+            maintain.maintain(self.memory, 'distill')
+        gen.assert_not_called()
+
     def test_quota_exhaustion_aborts_the_batch(self):
         for name in ('2026-01-01.md', '2026-01-02.md'):
             p = self.root / self.ctx / 'memory' / name

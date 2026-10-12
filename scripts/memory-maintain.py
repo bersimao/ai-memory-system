@@ -139,6 +139,12 @@ def maintain(memory, mode, limit=40):
     horizon = dt.datetime.now().timestamp() - 35 * 86400
     candidates = []
     for ctx in (memory.root / 'projects').glob('*/context'):
+        # /tmp/claude-<uid>/ is where Claude Code keeps session scratchpads, so a store encoded from
+        # it is a headless test session, never a project: its pages were injected into real sessions
+        # as recall noise (2026-10-12). This is the one place every writer's transcript or checkpoint
+        # passes before becoming a memory page. Not all of /tmp: a repo someone keeps there is real.
+        if ctx.parent.name.startswith('-tmp-claude-'):
+            continue
         if mode == 'backfill':
             sources = (ctx / 'transcripts').glob('*.md')
         else:
