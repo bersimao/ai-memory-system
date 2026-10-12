@@ -148,7 +148,11 @@ def handle(memory, event):
         prompt = event.get('prompt', '')
         # A background-task notice arrives as a prompt: 23 of 991 real recalls, and its words
         # (completed, status, summary) match any distilled session summary (2026-10-10).
-        if not isinstance(prompt, str) or not prompt.strip() or prompt.lstrip().startswith(('/', '<task-notification>')):
+        # So does a sub-agent's final report (`<agent-message from=..>`, "[Subagent hand-back]"): 12 real
+        # recalls, 180 to 453 matched words each, all 12 injected, 19 KB. The transcript stores it with a
+        # "Another Claude session sent a message:" line in front that the hook never receives (2026-10-12).
+        if not isinstance(prompt, str) or not prompt.strip() or prompt.lstrip().startswith(
+                ('/', '<task-notification>', '<agent-message ')):
             return ''
         scope = memory.config.get('automatic_recall_scope', 'project')
         if scope not in ('project', 'all'):

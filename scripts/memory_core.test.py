@@ -293,6 +293,9 @@ class Tests(unittest.TestCase):
         self.memory.config.update({'automatic_recall_scope': 'all', 'recall_min_terms': 2})
         ask = lambda prompt: hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': prompt, 'session_id': 's'})
         self.assertEqual(ask('<task-notification>\n<status>completed</status>'), '')
+        # 2026-10-12: a sub-agent's final report reaches the hook in this shape (12 of 12 logged hashes).
+        self.assertEqual(ask('<agent-message from="a0aa9403a96a697d0">\n[Subagent hand-back] The text below is the '
+                             'final report of a subagent.\n  status completed, commit and push done\n</agent-message>'), '')
         self.assertIn('deploy.md', ask('status completed'))      # the same words, typed, still recall
         self.assertIn('deploy.md', ask('commit and push'))       # off by default
         self.memory.config['recall_plain_terms'] = 3
