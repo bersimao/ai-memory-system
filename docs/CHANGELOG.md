@@ -2,6 +2,54 @@
 
 Dates are when a change landed on `main`. Commit hashes are from this repo.
 
+## 2026-10-12
+
+Update the same way as in the 2026-09-19 entry below (`git pull origin main`, then
+`./install.sh` with `--dry-run` first).
+
+**Upgrading from an earlier install** — what changed in behavior:
+- memsearch (Milvus) is no longer used. Semantic search now lives in
+  `data/memory-system/index.sqlite`; the old `milvus.db` is not migrated, so
+  build the index by hand once (see the README). If nothing else on the machine
+  uses memsearch, `pip uninstall memsearch pymilvus milvus-lite` and delete
+  `~/.memsearch/` afterwards.
+- `cron/memsearch-index.sh` is now `cron/memory-index.sh`: update your crontab
+  line. Its log moved from `~/.memsearch/cron.log` to `<root>/logs/cron.log`.
+- `--semantic-updates` (installer) and `mem search --engine` are gone and now
+  fail as unknown arguments.
+- The installer does not delete files that stopped shipping. Remove them
+  yourself: `cron/memsearch-index.sh`, `cron/check-mem-review.sh`,
+  `scripts/llm-run`.
+
+**Added**
+- Resident embedder process: `mem search --semantic` asks it first (5 s budget)
+  and loads the model only if nothing answers. (`e448cf7`)
+- `memory-doctor.py` reports `orphan_page`, `symlink_in_store` and symlinks in
+  the skills search roots. (`f01c384`, `3fd3277`)
+- `mem-bench.py` and `memory-weekly-check.py`; bench cases stay private.
+  (`50187f6`)
+
+**Changed**
+- [Codex support](codex-support.md) now says what Codex's sandbox blocks: hooks
+  work, `mem` commands run by the model do not. (`9c90a3c`)
+
+**Removed**
+- memsearch engine and `--semantic-updates`. (`16aee1e`)
+- `scripts/llm-run`; Codex is documented as the extractor. (`e8c360a`)
+- `cron/check-mem-review.sh`: nothing called it. (`051e9b2`)
+
+**Fixed**
+- Store reads refuse symlinks anywhere between the root and the file.
+  (`f01c384`)
+- The installer read a `MANIFEST` comment as a file name and refused to install.
+  (`16aee1e`)
+- A sub-agent's final report no longer triggers automatic recall. (`180ebcd`)
+- Sessions under Claude's temp directory no longer become memory pages.
+  (`37caea3`)
+- Injected recall is counted by hits, not bytes. (`a9292a4`)
+- `cron/memory-index.sh` exited non-zero on every run of a public install: it
+  called two generators that do not ship. (`c74b611`)
+
 ## 2026-09-19
 
 **How to update** (from the clone you installed from):
