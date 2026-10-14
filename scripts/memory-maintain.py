@@ -192,8 +192,14 @@ def maintain(memory, mode, limit=40):
                     continue
                 obj = generate(memory, source, SUMMARY_PROMPT, schema=SUMMARY_SCHEMA)
                 text = summary_markdown(obj['summary']) if isinstance(obj.get('summary'), str) else obj.get('summary')
-                if not isinstance(text, str) or not text.strip() or len(text) > 6000:
-                    raise ValueError('invalid summary')
+                if not isinstance(text, str):
+                    raise ValueError('invalid summary: not a string (' + type(text).__name__ + ')')
+                if not text.strip():
+                    raise ValueError('invalid summary: empty')
+                # Prompt target stays 6000; cap is 2x so a normal overshoot (haiku: 6085, 7179 on
+                # 2026-10-13) is kept instead of losing the day. Cap only rejects runaway output.
+                if len(text) > 12000:
+                    raise ValueError('invalid summary: ' + str(len(text)) + ' chars, cap 12000')
                 if memory.read_stored(path) != source:
                     raise ValueError('source changed during extraction')
                 result = memory.apply({'version': VERSION, 'changes': [memory.change(target,
