@@ -383,6 +383,16 @@ class Tests(unittest.TestCase):
         self.assertEqual(result['manifest']['omitted'][0]['source'], self.rel)
         self.assertNotIn('RAW SECRET', result['text'])
 
+    def test_clear_start_omits_latest_checkpoint(self):
+        # 2026-10-23: a session opened by /clear got the previous topic's checkpoint as noise.
+        self.memory.checkpoint(self.cwd, 'sess', 'old topic decision', 'cursor-1')
+        base = {'cwd': str(self.cwd), 'session_id': 's', 'hook_event_name': 'SessionStart'}
+        self.assertIn('old topic decision', hooks.handle(self.memory, {**base, 'source': 'startup'}))
+        self.assertIn('old topic decision', hooks.handle(self.memory, base))  # Codex: no source field
+        self.assertNotIn('old topic decision', hooks.handle(self.memory, {**base, 'source': 'clear'}))
+        omitted = self.memory.snapshot(self.cwd, checkpoint=False)['manifest']['omitted']
+        self.assertTrue(any('/checkpoints/' in o['source'] for o in omitted))
+
     def seed_other(self):
         rel = 'projects/other/context/topics/retry.md'
         atomic(self.memory.path(rel), '# Retry design\nThe idempotency defect was resolved by persisting the request identifier.')
@@ -1222,6 +1232,18 @@ class IntegrationTests(unittest.TestCase):
         self.memory.split(target, force=True)
         self.assertLess(len(read(self.memory.path(target))), 1375)
         self.assertTrue(any(read(path) == original for path in (self.root / 'context').glob('index-*.md')))
+
+    def test_cap_error_names_rebalance_only_for_a_salience_project_index(self):
+        index = 'projects/p/context/MEMORY.md'
+        atomic(self.memory.path(index), '# Working memory\n')
+        def hint(target, salience):
+            self.memory.config['salience'] = salience
+            with self.assertRaises(ValueError) as caught:
+                self.memory.apply({'version': VERSION, 'changes': [self.memory.change(target, 'x' * 5000)]})
+            return str(caught.exception)
+        self.assertIn('(mem rebalance, then mem split if still over)', hint(index, True))
+        self.assertIn('(mem split)', hint(index, False))
+        self.assertIn('(mem split)', hint('context/USER.md', True))
 
     def test_split_preserves_relative_link_destinations(self):
         target = self.ctx + '/topics/decision.md'
