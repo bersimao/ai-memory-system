@@ -106,6 +106,19 @@ def split(memory, relative):
     return memory.split(relative)
 
 
+def alert_archived(paths):
+    """A whole index went to an archive: its MEMORY.md now shows only archive links, so no session
+    sees that store's context at startup. Lossless, but a human must rebuild it as `## ` sections
+    (or raise .cap). Shared alert channel, so /end-of-day sees it; closed by hand (alert.sh ok)."""
+    if not paths:
+        return
+    message = ('index archived whole - MEMORY.md now holds only archive links; rebuild it as ## sections '
+               'with hub links, or raise .cap\n' + '\n'.join('  ' + p for p in paths))
+    # $0 must not be alert.sh itself: it runs as a CLI when $0 equals its own path.
+    subprocess.run(['bash', '-c', '. "$1" && alert "$2" "$3"', 'memory-maintain', str(Path(__file__).resolve().parent.parent / 'cron/alert.sh'),
+                    'INDEX-ARCHIVE ALERT', message], check=False)
+
+
 SUMMARY_PROMPT = ('Return {"summary":"..."}. The summary value is Markdown text, not JSON: **Goal**, **Deliverables**, '
                   '**Decisions** with the reason for each, and **Open threads**, using bullet lists where useful. '
                   'Max 6000 characters. Do not invent facts.')
@@ -129,12 +142,27 @@ QUOTA = re.compile(r'cc_cli_limit_message|spend limit|usage limit|limit.{0,80}(r
 
 def maintain(memory, mode, limit=40):
     if mode == 'curate':
+        archived, failures = [], []
+        events = memory.usage() if memory.config.get('salience') else None
         for path in sorted((memory.root / 'projects').glob('*/context/MEMORY.md')):
-            result = split(memory, str(path.relative_to(memory.root)))
+            relative = str(path.relative_to(memory.root))
+            try:
+                if events is not None and memory.salient(relative):  # daily, under the cap too: a cold line used again returns
+                    rebalanced = memory.rebalance(relative, events=events)
+                    if rebalanced['changed']:
+                        print(json.dumps(rebalanced, ensure_ascii=False))
+                result = split(memory, relative)
+            except Exception as exc:  # one store (symlink, conflict, cap) must not cost the others their run
+                print('failed ' + relative + ': ' + str(exc), file=sys.stderr)
+                failures.append(relative)
+                continue
             if result['changed']:
                 print(json.dumps(result))
-        print('Curation preserves full originals. Semantic edits require reviewed proposals.')
-        return []
+            if result.get('archived'):
+                archived.append(relative)
+        alert_archived(archived)
+        print('Curation moves sections and archives verbatim; nothing is deleted or rewritten.')
+        return failures
     today = dt.date.today()
     horizon = dt.datetime.now().timestamp() - 35 * 86400
     candidates = []
@@ -213,6 +241,8 @@ def maintain(memory, mode, limit=40):
                 if memory.read_stored(path) != source:
                     raise ValueError('source changed during extraction')
                 result = memory.facts(relative, facts)
+                if result.get('archived'):
+                    alert_archived([str(ctx.relative_to(memory.root) / 'MEMORY.md')])
         except Exception as exc:
             if QUOTA.search(str(exc)):
                 raise

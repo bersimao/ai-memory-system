@@ -47,8 +47,19 @@ Every accepted transaction records originals and replacements before writing. Th
 coordinates these writers; arbitrary external file edits do not participate in the lock.
 
 Caps are characters: USER 1,375; global MEMORY 4,000; project index 2,500 or its `.cap`.
-Use `mem split RELATIVE_PATH` when an index fills: preserve its full original in a topic page and keep a pointer;
-never compress facts to fit. Scheduled curation performs a lossless project-index split.
+In an index with `## <topic>` sections, a new page's pointer goes at the end of that section's hub
+(the `topics/` page linked on the section's first line), not into `MEMORY.md`.
+Use `mem split RELATIVE_PATH` when an index fills: it moves the largest `## ` sections whole to their hub
+and leaves one pointer line each; with nothing movable it archives the index verbatim in `index-*.md`,
+linked from the new index. Finished topic: `mem close-section RELATIVE_PATH "## X"` (section to its hub,
+pointer under the closed heading, config `closed_heading`, default `## Closed`). Never compress facts
+to fit. Scheduled curation runs the same split.
+Salience (opt-in, config `salience: true`; optional `salience_recent_days` limits it to stores with a
+recent session): curation keeps a project index's strongest lines (fresh, recalled, opened, recalled
+from another project counts double, or pinned with `mem pin RELATIVE_PATH "fragment"`) within cap - 300
+and moves weak ones to `MEMORY-COLD.md` beside it: searched and recalled, not loaded at startup; a cold
+line used again comes back. `mem rebalance RELATIVE_PATH --dry-run` lists the moves. An always/never
+rule belongs in the repo's instruction file, not in memory.
 Checkpoint and distilled candidate text is unverified until checked against its evidence.
 Accepted writes are immediately visible to lexical search; semantic search sees them after the next index run.
 

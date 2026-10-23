@@ -70,6 +70,27 @@ def recall_stats(events, since):
             'p50_ms': pct(elapsed, 0.5), 'p95_ms': pct(elapsed, 0.95)}
 
 
+def recall_rows(events, since):
+    """One row per recall with a logged search. top_score is the search's top, before the hook's
+    gates (it sets the sample bins and the over-floor count); source/line are the page the hook
+    opened with when it injected - a gate can drop the top hit and re-open with another one
+    (7 of 148 injections, 2026-10-17). opener None: the opener is not among the logged search
+    hits (a vector-only fill), and the row shows the top hit instead."""
+    searches = {e['request_id']: e for e in events if e.get('event') == 'search' and e.get('hits')}
+    rows = []
+    for event in events:
+        search = searches.get(event.get('request_id'))
+        if event.get('event') != 'recall' or event.get('at', '') < since or not search:
+            continue
+        top = max(search['hits'], key=lambda h: h['score'])
+        opener = next((h for h in search['hits'] if h.get('id') == event['hits'][0]), None) if event.get('hits') else top
+        shown = opener or top
+        rows.append({'hash': search['query_hash'], 'top_score': top['score'], 'source': shown['source'],
+                     'line': shown['line'], 'terms': shown.get('matched_terms', []), 'injected': bool(event.get('hits')),
+                     'opener_score': opener and opener is not top and opener['score'], 'opener_found': opener is not None})
+    return rows
+
+
 def prompts_by_hash(root, wanted):
     """Recover prompt text from Claude Code session logs; the events keep only a hash."""
     found = {}
@@ -154,25 +175,27 @@ def main():
     events = [json_read(p) for p in (memory.state / 'usage').glob('*.json')]
     since = (now - timedelta(days=7)).astimezone(timezone.utc).isoformat()
     stats = recall_stats(events, since)
-    searches = {e['request_id']: e for e in events if e.get('event') == 'search' and e.get('hits')}
-    recalls = []
-    for event in events:
-        search = searches.get(event.get('request_id'))
-        if event.get('event') == 'recall' and event.get('at', '') >= since and search:
-            top = max(search['hits'], key=lambda h: h['score'])
-            recalls.append({'hash': search['query_hash'], 'top_score': top['score'], 'source': top['source'],
-                            'line': top['line'], 'terms': top.get('matched_terms', []), 'injected': bool(event.get('hits'))})
+    recalls = recall_rows(events, since)
+    # Recalls whose top was over the floor before the gates: separates a traffic-mix change from
+    # the gates' effect (2026-10-17: injection 47.2% -> 29.5%, but over-floor itself fell to 35.6%).
+    stats['over_floor'] = sum(r['top_score'] >= floor for r in recalls)
     picked = sample(recalls, floor, seed=int(today.replace('-', '')))
     prompts = prompts_by_hash(root, {r['hash'] for r in picked})
     sheet = weekly / (today + '-rotulos.md')
-    rows = ['# Rotulos ' + today, '', 'Marque [x] quando o hit do topo ajudaria a responder o prompt.', '']
+    rows = ['# Rotulos ' + today, '', 'Marque [x] quando a pagina da linha ajudaria a responder o prompt: a que o hook injetou '
+            '(injetado=True) ou o topo da busca (injetado=False). abertura=fora-da-busca: a pagina injetada nao esta nos hits '
+            'logados, nao rotular.', '']
     for i, r in enumerate(picked):
         try:
             lines = (root / r['source']).read_text(encoding='utf-8').splitlines()
             snippet = ' | '.join(x.strip() for x in lines[r['line'] - 1:r['line'] + 12] if x.strip())[:300]
         except OSError:
             snippet = '(fonte sumiu)'
-        rows += ['- [ ] #%d score=%.2f injetado=%s `%s`' % (i, r['top_score'], r['injected'], r['source']),
+        if not r['opener_found']:
+            snippet = '(abertura fora da busca: pagina injetada desconhecida)'
+        opened = (' aberto_com=%.2f' % r['opener_score'] if r['opener_score'] else '') + (
+            '' if r['opener_found'] else ' abertura=fora-da-busca')
+        rows += ['- [ ] #%d score=%.2f injetado=%s%s `%s`' % (i, r['top_score'], r['injected'], opened, r['source']),
                  '  - prompt: ' + repr(prompts.get(r['hash'], '(prompt nao recuperado)')[:300]),
                  '  - termos: ' + ', '.join(r['terms']), '  - hit: ' + snippet]
     sheet.write_text('\n'.join(rows) + '\n', encoding='utf-8')
@@ -203,8 +226,8 @@ def main():
         '- [ ] #parked **[memoria] %s %s** ^sfl-%s' % (TITLE, today, now.strftime('%Y%m%d-%H%M')),
         '\t- **Retomar em:** ' + ' · '.join(x for x in (demand and '[[' + demand + ']]', resume and '`' + resume + '`') if x),
         '\t- **Capturado:** %s — timer semanal (`memory-weekly-check.py`), sem sessão' % now.strftime('%Y-%m-%d %H:%M'),
-        '\t- **Sintoma:** bench léxico: %s. Recalls 7d: %s, injetados %s, hook p50 %s ms / p95 %s ms.%s' % (
-            bench_line, stats['recalls'], stats['injected'], stats['p50_ms'], stats['p95_ms'],
+        '\t- **Sintoma:** bench léxico: %s. Recalls 7d: %s, acima do piso antes dos gates %s, injetados %s, hook p50 %s ms / p95 %s ms.%s' % (
+            bench_line, stats['recalls'], stats['over_floor'], stats['injected'], stats['p50_ms'], stats['p95_ms'],
             (' Atenção: ' + '; '.join(findings) + '.') if findings else ''),
         '\t- **Pistas:** relatório `%s`; folha de rótulos `%s` (%d recalls reais).' % (report, sheet, len(picked)),
         '\t- **Próximo passo:** numa sessão%s, rotular a folha (precisão acima/abaixo do piso) e decidir se o piso ou os casos do bench mudam.' % (

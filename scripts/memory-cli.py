@@ -15,6 +15,8 @@ from memory_core import Memory, main
 # answers curated in ~1.3 s and transcripts in ~2.6 s (measured 2026-10-11); past this it is busy with someone else's
 # request or stuck, and waiting longer costs more than the load it was meant to save.
 RESIDENT_WAIT = 5
+# Where an agent CLI puts its session id: Claude Code, then Codex.
+SESSION_VARS = ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID', 'CODEX_SESSION_ID')
 
 
 def resident(memory, args, collection):
@@ -61,10 +63,10 @@ def semantic(memory, args, collection, log=True):
     found = resident(memory, args, collection)
     if found:
         if log:
-            memory.log_search(found, args.query, args.session)
+            memory.log_search(found, args.query, args.session, 'cli')
         return found
     payload = {'root': str(memory.root), 'query': args.query, 'cwd': args.cwd, 'scope': args.scope,
-               'domain': args.domain, 'collection': collection, 'limit': args.top_k, 'session': args.session, 'log': log}
+               'domain': args.domain, 'collection': collection, 'limit': args.top_k, 'session': args.session, 'log': log, 'origin': 'cli'}
     result = subprocess.run([sys.executable, str(Path(__file__).with_name('memory-search.py'))],
                             input=json.dumps(payload), text=True, capture_output=True, timeout=120)
     if result.returncode:
@@ -93,7 +95,9 @@ def run():
     engine.add_argument('--semantic', action='store_true')
     engine.add_argument('--auto', action='store_true', help='lexical; semantic only when the top score is under recall_min_score')
     parser.add_argument('--json', action='store_true')
-    parser.add_argument('--session')
+    # The agent's own searches count as real-session use (salience); bench and cron run without it.
+    # Codex 0.163 sets CODEX_THREAD_ID and CODEX_SESSION_ID (equal); mem-bench.py strips the same list.
+    parser.add_argument('--session', default=next((os.environ[v] for v in SESSION_VARS if os.environ.get(v)), None))
     args = parser.parse_args(sys.argv[2:])
     collection = {'memsearch_chunks': 'curated', 'memsearch_transcripts': 'transcripts'}.get(args.collection, args.collection)
     if collection not in ('curated', 'transcripts', 'checkpoints', 'sdk') or not 1 <= args.top_k <= 50:
@@ -105,7 +109,7 @@ def run():
         output = semantic(memory, args, collection)
     else:
         output = memory.search(args.query, args.cwd, args.scope, args.domain, args.top_k, args.session, collection,
-                               log=not auto)
+                               log=not auto, origin='cli')
     # RAG plan T2.3: semantic costs ~18 s p50, so it runs only when lexical is weak.
     # Same floor as the prompt hook; with no floor configured only an empty result is weak.
     if auto:
@@ -116,7 +120,7 @@ def run():
                     output = found
             except (ValueError, OSError, subprocess.SubprocessError) as exc:
                 output['semantic_error'] = str(exc)  # never worse than lexical
-        memory.log_search(output, args.query, args.session)  # one query, one event, for the kept result
+        memory.log_search(output, args.query, args.session, 'cli')  # one query, one event, for the kept result
     if args.json:
         print(json.dumps(output, ensure_ascii=False, indent=2))
         return

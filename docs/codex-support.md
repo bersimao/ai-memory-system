@@ -36,6 +36,10 @@ without a writable root. It also lets `mem apply` write without an approval prom
 only the refusal of targets outside the curated Markdown was tested, not every
 subcommand. Treat it as a deliberate choice, not a default.
 
+Where Codex can run `mem search`, the search counts as use for salience: the CLI reads
+the session from `CODEX_THREAD_ID` or `CODEX_SESSION_ID` (Codex 0.163 sets both). Automatic
+Codex runs (review gates, delegated tasks) that search count too.
+
 ## Without hooks
 
 If the harness does not execute hooks, the shared CLI and skill are the fallback, and

@@ -11,7 +11,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
-from memory_core import Memory, atomic, bounded, digest, excerpt, json_write, now, read, redact
+from memory_core import EXCERPT_BYTES, Memory, atomic, bounded, digest, excerpt, json_write, now, read, redact
 
 ABSENCE = 'No lexical matches above the recall floor in the searched scope. This is not proof of absence. Before denying prior work, try domain identifiers, the other language, or semantic search.\n'
 # Whole words only: a bare 'antes' matched inside importantes/restantes/bastantes.
@@ -204,7 +204,7 @@ def handle(memory, event):
             if hit['score'] < floor and not (vector and rank):  # fill slots of a hybrid pick skip the lexical floor
                 continue
             if from_vector:
-                first, text = 0, bounded(hit['content'], 500)
+                first, text = 0, bounded(hit['content'], EXCERPT_BYTES)  # salience credits the blocks in this cut
             else:
                 # A 32-line window cut to 500 bytes can miss the match: cut where most matched terms fit.
                 # Only the 3 rarest: a long prompt matches a dozen common words, and one clip per term
@@ -234,7 +234,7 @@ def handle(memory, event):
                 continue
             block = '\nProject: ' + hit['project'] + '\nSource: ' + str(memory.root / hit['source']) + ':' + str(hit['line'])
             block += '\nEngine: semantic (cue-gated; relevance not scored)\nExpand: ' + semantic['request_id'] + ':' + hit['id']
-            block += '\n' + bounded(hit['content'], 500) + '\n'
+            block += '\n' + bounded(hit['content'], EXCERPT_BYTES) + '\n'
             if len((output + block).encode()) <= budget:
                 output += block
                 injected.append(hit['id'])

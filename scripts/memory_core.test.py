@@ -3,6 +3,7 @@ import importlib.util
 import io
 from contextlib import redirect_stdout
 import json
+import re
 import os
 from pathlib import Path
 import subprocess
@@ -167,9 +168,172 @@ class Tests(unittest.TestCase):
         target = next(p for p in result['changed'] if '/index-' in p)
         self.assertEqual(read(self.memory.path(target)), original)
 
+    def test_split_moves_largest_section_to_its_hub_and_keeps_the_pointer(self):
+        hub = self.ctx + '/topics/demand-a.md'
+        atomic(self.memory.path(hub), '# Demand A\nold hub line\n')
+        big = '## Demand A\n- [A hub](topics/demand-a.md) — current state\n' + 'A detail line.\n' * 200
+        small = '## Demand B\n- B is short.\n'
+        atomic(self.memory.path(self.rel), '# Working memory\n' + big + small)
+        result = self.memory.split(self.rel)
+        self.assertEqual(result['moved'], ['topics/demand-a.md'])
+        self.assertIsNone(result['archived'])
+        index = read(self.memory.path(self.rel))
+        self.assertEqual(index, '# Working memory\n## Demand A\n- [A hub](topics/demand-a.md) — current state\n\n' + small)
+        self.assertTrue(read(self.memory.path(hub)).startswith('# Demand A\nold hub line\n\n<!-- moved from MEMORY.md'))
+        # Rebased for topics/: the moved self-link now points at the hub itself, not topics/topics/.
+        self.assertIn(big.rstrip('\n').replace('](topics/demand-a.md)', '](demand-a.md)'), read(self.memory.path(hub)))
+
+    def test_moved_links_still_resolve_and_a_broken_rebase_is_rejected(self):
+        atomic(self.memory.path(self.ctx + '/topics/deep.md'), 'deep\n')
+        atomic(self.memory.path(self.ctx + '/memory/2026-10-01.md'), 'log\n')
+        section = '## Demand A\n- see [deep](topics/deep.md) and [log](memory/2026-10-01.md)\n' + 'detail\n' * 400
+        atomic(self.memory.path(self.rel), '# W\n' + section)
+        target = self.root / self.ctx / self.memory.split(self.rel)['moved'][0]
+        for link in re.findall(r'\]\(([^)]+)\)', target.read_text()):
+            self.assertEqual((target.parent / link).resolve(),
+                             (self.root / self.ctx / {'deep.md': 'topics/deep.md'}.get(link, 'memory/2026-10-01.md')).resolve())
+        self.assertFalse(list((self.root / self.ctx).glob('index-*.md')))
+        # Links that do not name a real file, or that this cannot read, are never rewritten...
+        odd = '- [h](~/.claude/x.md) [w](C:\\U\\x.md) [u](HTTPS://x/y.md) `[c](topics/deep.md)` [g](topics/gone.md)'
+        self.assertEqual(memory_core.rebase_links(odd, 'c', 'c/topics', lambda t: t == 'c/topics/deep.md'), odd)
+        # ...and one this cannot rebase may not leave its dir at all.
+        atomic(self.memory.path(self.rel), '# W\n- [a](<topics/deep.md>)\n')
+        with self.assertRaisesRegex(ValueError, 'lose 1 line'):
+            self.move((self.rel, '# W\n'), (self.ctx + '/topics/other.md', '- [a](<topics/deep.md>)\n'))
+        atomic(self.memory.path(self.rel), '# W\n## R\n[x]: topics/deep.md\n' + 'r\n' * 1300)
+        self.assertEqual(self.memory.split(self.rel)['moved'], [])
+        # Percent-encoded targets resolve decoded and keep their encoding; a dangling link ties its section.
+        atomic(self.memory.path(self.ctx + '/topics/a b.md'), 'spaced\n')
+        atomic(self.memory.path(self.rel), '# W\n## P\n- intro\n- [s](topics/a%20b.md)\n' + 'p\n' * 1300)
+        self.assertEqual(self.memory.split(self.rel)['moved'], ['topics/p.md'])
+        self.assertIn('- [s](a%20b.md)', (self.root / self.ctx / 'topics/p.md').read_text())
+        atomic(self.memory.path(self.rel), '# W\n## Q\n- [hub](topics/a%20b.md)\n' + 'q\n' * 1300)
+        self.assertEqual(self.memory.split(self.rel)['moved'], ['topics/a b.md'])  # the file, not `a%20b.md`
+        atomic(self.memory.path(self.rel), '# W\n## G\n- intro\n- [g](topics/gone.md)\n' + 'g\n' * 1300)
+        self.assertEqual(self.memory.split(self.rel)['moved'], [])
+        atomic(self.memory.path(self.rel), '# W\n- [s](topics/a%20b.md)\n')
+        with self.assertRaisesRegex(ValueError, 'lose 1 line'):
+            self.move((self.rel, '# W\n'), (self.ctx + '/topics/other.md', '- [s](topics/a%20b.md)\n'))
+        # The same move with links left as written in MEMORY.md would point at topics/topics/: refused.
+        atomic(self.memory.path(self.rel), '# W\n- [x](topics/deep.md)\n')
+        with self.assertRaisesRegex(ValueError, 'lose 1 line'):
+            self.move((self.rel, '# W\n'), (self.ctx + '/topics/other.md', '- [x](topics/deep.md)\n'))
+
+    def test_split_names_a_page_when_the_section_has_no_hub_link(self):
+        atomic(self.memory.path(self.rel), '# W\n## Ação Única\n' + 'x line\n' * 400)
+        self.assertEqual(self.memory.split(self.rel)['moved'], ['topics/acao-unica.md'])
+        self.assertIn('- [Ação Única](topics/acao-unica.md) — section moved', read(self.memory.path(self.rel)))
+
+    def test_split_fallback_flattens_the_archive_chain(self):
+        # The old split pointed each archive at the previous one: one real store reached depth 3.
+        ctx = self.root / self.ctx
+        atomic(ctx / 'index-00000000000000aa.md', '# Working memory\nfirst era\n')
+        atomic(ctx / 'index-00000000000000bb.md', '- [Preserved context](index-00000000000000aa.md)\nsecond era\n')
+        atomic(self.memory.path(self.rel), '- [Preserved context](index-00000000000000bb.md)\n' + 'flat line\n' * 400)
+        result = self.memory.split(self.rel)
+        index = read(self.memory.path(self.rel))
+        for name in (result['archived'], 'index-00000000000000bb.md', 'index-00000000000000aa.md'):
+            self.assertIn('](' + name + ')', index)
+
+    def test_split_archives_when_sections_are_all_pointers_and_still_over_cap(self):
+        sections = ''.join('## D%d\n- [D%d](topics/d%d.md) — %s\n' % (i, i, i, 'p' * 120) for i in range(30))
+        atomic(self.memory.path(self.rel), '# W\n' + sections)
+        result = self.memory.split(self.rel)
+        self.assertEqual(result['moved'], [])
+        self.assertTrue(result['archived'])
+
+    def test_split_never_moves_an_index_of_topic_pointers(self):
+        # Six real stores carry `## Index`/`## Índice`; the first-link rule would have buried it in its first topic.
+        index = '## Índice\n' + ''.join('- [T%d](topics/t%d.md) — %s\n' % (i, i, 'x' * 60) for i in range(25))
+        atomic(self.memory.path(self.rel), '# W\n' + index + '## Notes\n' + 'note line\n' * 100)
+        result = self.memory.split(self.rel)
+        self.assertEqual(result['moved'], ['topics/notes.md'])
+        self.assertIn(index, read(self.memory.path(self.rel)))
+
+    def test_curate_alerts_every_whole_index_archive_and_survives_a_failing_store(self):
+        log = Path(self.tmp.name) / 'alerts.log'
+        other = 'projects/-a-first/context/MEMORY.md'
+        atomic(self.memory.path(other), 'x\n')
+        atomic(self.memory.path(self.rel), 'flat line\n' * 400)
+        real = maintain.split
+        def split(memory, relative):
+            if relative == other:
+                raise ValueError('revision conflict: ' + relative)
+            return real(memory, relative)
+        with patch.dict(os.environ, {'CLAUDE_ALERT_LOG': str(log)}), patch.object(maintain, 'split', split), \
+                redirect_stdout(io.StringIO()), patch('sys.stderr', io.StringIO()):
+            failures = maintain.maintain(self.memory, 'curate')
+        self.assertEqual(failures, [other])
+        self.assertIn('[INDEX-ARCHIVE ALERT] [!]', log.read_text())
+        self.assertIn(self.rel, log.read_text())
+
+    def test_facts_overflow_moves_a_section_instead_of_chaining(self):
+        source = self.ctx + '/memory/2026-09-12.md'
+        atomic(self.memory.path(source), 'The retry bug was fixed using an idempotency key.')
+        atomic(self.memory.path(self.rel), '# W\n## Old demand\n' + 'detail\n' * 355)
+        result = self.memory.facts(source, [{'text': 'Retries use a key.', 'quote': 'The retry bug was fixed'}])
+        self.assertTrue(result['changed'])
+        index = read(self.memory.path(self.rel))
+        self.assertIn('topics/old-demand.md', index)
+        self.assertIn('Extracted candidates', index)
+        self.assertFalse(list((self.root / self.ctx).glob('index-*.md')))
+
+    def test_facts_reports_a_whole_index_archive_so_distill_can_alert(self):
+        source = self.ctx + '/memory/2026-09-12.md'
+        atomic(self.memory.path(source), 'The retry bug was fixed using an idempotency key.')
+        atomic(self.memory.path(self.rel), 'flat detail\n' * 225)
+        result = self.memory.facts(source, [{'text': 'Retries use a key.', 'quote': 'The retry bug was fixed'}])
+        self.assertTrue(result['archived'].startswith('index-'))
+
+    def test_close_section_moves_it_to_the_hub_with_a_closed_pointer(self):
+        hub = self.ctx + '/topics/demand-a.md'
+        atomic(self.memory.path(self.rel), '# W\n## A\n- [A hub](topics/demand-a.md)\n- open thread\n\n## B\n- b\n')
+        self.memory.close_section(self.rel, 'A')
+        self.assertEqual(read(self.memory.path(self.rel)),
+                         '# W\n## B\n- b\n\n## Closed\n- [A hub](topics/demand-a.md) (A)\n')
+        self.assertIn('- open thread', read(self.memory.path(hub)))
+        with self.assertRaisesRegex(ValueError, 'no section'):
+            self.memory.close_section(self.rel, 'A')
+        atomic(self.memory.path(self.rel), read(self.memory.path(self.rel)).replace('## B\n- b\n\n', '') + '\n## C\n- [C](topics/c.md)\n- c\n')
+        self.memory.close_section(self.rel, '## C')
+        self.assertEqual(read(self.memory.path(self.rel)),
+                         '# W\n## Closed\n- [A hub](topics/demand-a.md) (A)\n- [C](topics/c.md) (C)\n')
+
     def test_fake_split_is_rejected(self):
         with self.assertRaisesRegex(ValueError, 'complete original'):
             self.apply(self.memory.change(self.rel, 'lost everything', 'split'))
+
+    def move(self, *pairs):
+        return self.memory.apply({'version': VERSION, 'changes': [
+            self.memory.change(rel, text, 'move', 'test move') for rel, text in pairs]})
+
+    def test_move_relocates_without_review_and_rejects_a_lost_line(self):
+        topic = self.ctx + '/topics/hub.md'
+        atomic(self.memory.path(self.rel), '# Context\n## A\nkeep\nlater\n')
+        with self.assertRaisesRegex(ValueError, 'lose 1 line'):
+            self.move((self.rel, '# Context\n## A\nkeep\n'), (topic, 'nothing here\n'))
+        self.move((self.rel, '# Context\n## A\n- [A](topics/hub.md)\nkeep\n'), (topic, 'later\n'))
+        self.assertEqual(read(self.memory.path(topic)), 'later\n')
+
+    def test_move_counts_duplicate_lines(self):
+        atomic(self.memory.path(self.rel), '# Context\nsame\nsame\n')
+        with self.assertRaisesRegex(ValueError, 'lose 1 line'):
+            self.move((self.rel, '# Context\nsame\n'))
+
+    def test_move_checks_only_new_lines_for_secrets(self):
+        # Legacy text that trips the heuristic must still be movable, or that section is stuck forever.
+        topic = self.ctx + '/topics/hub.md'
+        atomic(self.memory.path(self.rel), '# Context\nDB_PASS=legacy\n')
+        self.move((self.rel, '# Context\n'), (topic, 'DB_PASS=legacy\n'))
+        with self.assertRaisesRegex(ValueError, 'secret'):
+            self.move((topic, 'DB_PASS=legacy\nAPI_KEY=new\n'))
+
+    def test_move_batch_cannot_mix_operations(self):
+        old = read(self.memory.path(self.rel))
+        with self.assertRaisesRegex(ValueError, 'only move'):
+            self.memory.apply({'version': VERSION, 'changes': [
+                self.memory.change(self.rel, old + 'x\n', 'move', 'r'),
+                self.memory.change(self.ctx + '/topics/t.md', 'y\n', 'create', 'r')]})
 
     def test_facts_need_matching_evidence_and_dedup(self):
         source = self.ctx + '/memory/2026-09-12.md'
@@ -792,6 +956,17 @@ class AutoEngineTests(unittest.TestCase):
         logged = [e for e in map(json_read, (self.memory.state / 'usage').glob('*.json')) if e['event'] == 'search']
         return json.loads(out.getvalue()), sem.call_count, len(logged)
 
+    def test_codex_session_variable_marks_the_search_as_real_use(self):
+        cli = module('cli_codex', BASE / 'scripts/memory-cli.py')
+        argv = ['mem', 'search', 'validation', '--json', '--scope', 'project', '--cwd', str(self.cwd)]
+        env = {k: v for k, v in os.environ.items() if k not in cli.SESSION_VARS}
+        env['CODEX_THREAD_ID'] = 'codex-1'
+        with patch.object(cli, 'Memory', return_value=self.memory), patch.object(sys, 'argv', argv), \
+                patch.dict(os.environ, env, clear=True), redirect_stdout(io.StringIO()):
+            cli.run()
+        logged = [e for e in map(json_read, (self.memory.state / 'usage').glob('*.json')) if e['event'] == 'search']
+        self.assertEqual([e['session'] for e in logged], ['codex-1'])
+
     def test_strong_lexical_skips_semantic(self):
         output, calls, logged = self.auto('validation', 0.01, None)
         self.assertEqual((output['engine'], calls, logged), ('lexical', 0, 1))
@@ -873,6 +1048,48 @@ class SqliteEngineTests(unittest.TestCase):
             self.memory, 'validation', str(self.cwd), scope, None, 'curated', 5, stub)]
         self.assertEqual(search('project'), [self.rel])     # the better-matching private page never shows
         self.assertEqual(set(search('all')), {self.rel, self.other})
+
+    def test_vector_hits_carry_the_salience_labels(self):
+        stub = StubEmbedder()
+        self.semantic.index_vectors(self.memory, 'curated', stub)
+        hits = {h['source']: h for h in self.semantic.vector_hits(
+            self.memory, 'validation', str(self.cwd), 'all', None, 'curated', 5, stub)}
+        self.assertTrue(hits[self.rel]['own'])
+        self.assertFalse(hits[self.other]['own'])
+        self.assertEqual(hits[self.other]['blocks'], [memory_core.fingerprint('validation validation validation\n')])
+        cross = self.semantic.vector_hits(self.memory, 'validacao', str(self.cwd), 'all', None, 'curated', 5, stub)
+        self.assertTrue(cross and all(h['blocks'] == [] for h in cross))  # no shared word: no block, not all
+        # ...but the blocks recall would show of it are logged, credited only if it is shown.
+        self.assertEqual({h['source']: h['excerpt_blocks'] for h in cross},
+                         {self.rel: [memory_core.fingerprint('Never disable validation.\n')],
+                          self.other: [memory_core.fingerprint('validation validation validation\n')]})
+        self.assertNotIn('excerpt_blocks', hits[self.other])  # a block matched: the term rule alone
+        # A word shared only with a heading (not a block): the term rule finds nothing, the excerpt counts.
+        heading = {h['source']: h for h in self.semantic.vector_hits(
+            self.memory, 'private', str(self.cwd), 'all', None, 'curated', 5, stub)}[self.other]
+        self.assertEqual((heading['blocks'], heading['excerpt_blocks']),
+                         ([], [memory_core.fingerprint('validation validation validation\n')]))
+
+    def test_excerpt_blocks_stop_where_the_recall_cut_ends(self):
+        lines = ['- line %02d %s\n' % (i, 'x' * 30) for i in range(40)]  # 42 bytes each: ~12 fit in 500
+        atomic(self.memory.path(self.other), '# Long\n' + ''.join(lines))
+        self.memory.index_collection('curated')
+        stub = StubEmbedder()
+        self.semantic.index_vectors(self.memory, 'curated', stub)
+        hit = next(h for h in self.semantic.vector_hits(self.memory, 'validacao', str(self.cwd), 'all', None, 'curated', 5, stub)
+                   if h['source'] == self.other)
+        self.assertIn(memory_core.fingerprint(lines[0]), hit['excerpt_blocks'])
+        self.assertNotIn(memory_core.fingerprint(lines[-1]), hit['excerpt_blocks'])
+
+    def test_vector_hit_blocks_cover_the_whole_chunk(self):
+        # A flat index is one chunk of up to 60 lines, not a 32-line lexical window.
+        atomic(self.memory.path(self.other), '# Long\n' + ''.join('- filler %d\n' % i for i in range(40)) + '- validation at the end\n')
+        self.memory.index_collection('curated')
+        stub = StubEmbedder()
+        self.semantic.index_vectors(self.memory, 'curated', stub)
+        hit = next(h for h in self.semantic.vector_hits(self.memory, 'validation', str(self.cwd), 'all', None, 'curated', 5, stub)
+                   if h['source'] == self.other)
+        self.assertEqual(hit['blocks'], [memory_core.fingerprint('- validation at the end\n')])
 
     def test_search_drops_hits_whose_file_changed_since_indexing(self):
         stub = StubEmbedder()
@@ -1094,6 +1311,17 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(sent, ['# t\nreal canary\n'])
         self.assertEqual(set(doctor.symlinks(self.root)), {link for link, _ in links})
 
+    def test_doctor_reports_archives_reachable_only_through_another_archive(self):
+        doctor = module('doctor', BASE / 'scripts/memory-doctor.py')
+        ctx = self.root / self.ctx
+        atomic(ctx / 'index-00000000000000aa.md', 'first era\n')
+        atomic(ctx / 'index-00000000000000bb.md', '- [Preserved context](index-00000000000000aa.md)\n')
+        atomic(self.memory.path(self.rel), '- [Preserved context](index-00000000000000bb.md)\n')
+        deep = lambda: [i['path'] for i in doctor.diagnose(self.memory)['issues'] if i['type'] == 'archive_not_in_index']
+        self.assertEqual(deep(), [str(ctx / 'index-00000000000000aa.md')])
+        self.memory.split(self.rel, force=True)  # the fallback lifts every archive to the index
+        self.assertEqual(deep(), [])
+
     def test_doctor_reports_symlinked_projects_dir(self):
         doctor = module('doctor', BASE / 'scripts/memory-doctor.py')
         real = Path(self.tmp.name) / 'real-projects'
@@ -1160,6 +1388,268 @@ class IntegrationTests(unittest.TestCase):
         found = {p.relative_to(self.root.resolve()).as_posix() for p in doctor.orphans(self.root)}
         self.assertEqual(found, {self.ctx + '/topics/lost.md', 'context/SATELLITE.md',
                                  'projects/other/context/topics/b.md'})
+
+
+class Salience(unittest.TestCase):
+    OLD = '- old fact about alpha beta (2026-01-01) ' + 'o' * 80 + '\n'
+    NEW = '- fresh fact about gamma delta ' + 'n' * 90 + '\n'
+    TOP = '# Working memory\nOverview: the first block under the title never moves.\n\n'
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / 'store'
+        self.cwd = Path(self.tmp.name) / 'repo'
+        (self.cwd / '.git').mkdir(parents=True)
+        self.memory = Memory(self.root)
+        self.ctx = self.memory.resolve(self.cwd)['relative'] + '/context'
+        self.rel = self.ctx + '/MEMORY.md'
+        self.cold = self.ctx + '/MEMORY-COLD.md'
+
+    def index(self, text, room, movable=None):
+        """Write the index with a cap that fits all but its `movable` blocks, the cold pointer and `room` chars."""
+        atomic(self.memory.path(self.rel), text)
+        movable = [self.OLD, self.NEW] if movable is None else movable
+        fixed = len(text) - sum(len(m) for m in movable)
+        atomic(self.root / self.ctx / '.cap', str(fixed + len(memory_core.COLD_POINTER) + room))
+
+    def lines(self):
+        return sorted(l for p in (self.rel, self.cold) for l in (read(self.memory.path(p)) or '').splitlines() if l.strip())
+
+    def use(self, block, session='s1'):
+        self.memory.event({'event': 'search', 'request_id': 'r', 'session': session,
+                           'hits': [{'id': 'h', 'source': self.rel, 'blocks': [memory_core.fingerprint(block)]}]})
+
+    def test_units_cover_the_text_and_keep_comments_and_fences_whole(self):
+        text = ('# T\n<!-- a\n- not a block\n-->\n- item\n  cont\nlazy cont\n\npara one\npara two\n\n```\n# code\n\n- x\n```\n'
+                '## S\n1. n\n- y')
+        rows = memory_core.units(text)
+        self.assertEqual(''.join(r[2] for r in rows), text)
+        self.assertEqual([r[2].split('\n')[0] for r in rows if r[1] == 'block'],
+                         ['- item', 'para one', '```', '1. n', '- y'])
+        self.assertIn('- not a block', rows[1][2])
+        # Blank lines are their own never-moved units: a block that leaves does not take the separation with it.
+        self.assertEqual([r[1] for r in rows], ['fixed', 'fixed', 'block', 'blank', 'block', 'blank', 'block',
+                                                'fixed', 'block', 'block'])
+        self.assertEqual(rows[-1][0], '## S')
+        # A paragraph placed right after a list item gets a blank line, or it would parse as its continuation.
+        placed = memory_core.render([['', 'block', '- a\n'], ['', 'block', 'para\n']])
+        self.assertEqual([r[2].strip() for r in memory_core.units(placed) if r[1] == 'block'], ['- a', 'para'])
+
+    def test_fresh_block_outranks_old_unused_one_and_nothing_is_lost(self):
+        self.index(self.TOP + self.OLD + self.NEW, len(self.NEW))
+        before = self.lines()
+        result = self.memory.rebalance(self.rel, reserve=0)
+        self.assertEqual([d[1] for d in result['demoted']], [self.OLD.strip()[:90]])
+        self.assertNotIn(self.OLD, read(self.memory.path(self.rel)))
+        self.assertIn(memory_core.COLD_POINTER, read(self.memory.path(self.rel)))
+        self.assertIn(self.OLD, read(self.memory.path(self.cold)))
+        after = self.lines()
+        for line in before:
+            self.assertIn(line, after)
+        self.assertLessEqual(len(read(self.memory.path(self.rel))), self.memory.cap(self.rel))
+
+    def test_recalled_old_block_outranks_fresh_unused_one(self):
+        self.index(self.TOP + self.OLD + self.NEW, len(self.OLD))
+        self.use(self.OLD)
+        result = self.memory.rebalance(self.rel, reserve=0)
+        self.assertEqual([d[1] for d in result['demoted']], [self.NEW.strip()[:90]])
+
+    def test_session_null_use_is_no_credit(self):
+        self.index(self.TOP + self.OLD + self.NEW, len(self.OLD))
+        self.use(self.OLD, session=None)
+        result = self.memory.rebalance(self.rel, reserve=0)
+        self.assertEqual([d[1] for d in result['demoted']], [self.OLD.strip()[:90]])
+
+    def test_shown_excerpt_strengthens_its_blocks_and_an_unshown_one_does_not(self):
+        self.index(self.TOP + self.OLD + self.NEW, len(self.OLD))
+        self.memory.event({'event': 'search', 'request_id': 'r', 'session': 's1', 'query_hash': 'q',
+                           'hits': [{'id': 'h', 'source': self.rel, 'own': True, 'blocks': [],
+                                     'excerpt_blocks': [memory_core.fingerprint(self.OLD)]}]})
+        self.assertEqual([d[1] for d in self.memory.rebalance(self.rel, reserve=0, dry_run=True)['demoted']], [self.OLD.strip()[:90]])
+        self.memory.event({'event': 'recall', 'request_id': 'r', 'session': 's1', 'hits': ['h']})  # now it was shown
+        self.assertEqual([d[1] for d in self.memory.rebalance(self.rel, reserve=0)['demoted']], [self.NEW.strip()[:90]])
+
+    def test_lexical_and_vector_legs_of_one_prompt_are_one_use(self):
+        fp = memory_core.fingerprint(self.OLD)
+        legs = [{'event': 'search', 'request_id': r, 'session': 's1', 'query_hash': 'q', 'at': '2026-10-23T00:00:00+00:00',
+                 'hits': [{'id': r, 'source': self.rel, 'blocks': [fp]}]} for r in ('lexical', 'vector')]
+        next_prompt = dict(legs[0], request_id='next', query_hash='q2')
+        matched, shown = self.memory._uses(self.ctx, legs + [next_prompt])
+        self.assertEqual([m[0] for m in matched], [fp, fp])
+
+    def test_shown_topic_page_strengthens_the_block_linking_it(self):
+        old = '- [Old topic](topics/old.md) (2026-01-01) ' + 't' * 80 + '\n'
+        atomic(self.root / self.ctx / 'topics/old.md', 'x\n')
+        self.index(self.TOP + old + self.NEW, max(len(old), len(self.NEW)), [old, self.NEW])
+        self.memory.event({'event': 'search', 'request_id': 'r', 'session': 's1',
+                           'hits': [{'id': 'h', 'source': self.ctx + '/topics/old.md'}]})
+        self.assertEqual([d[1] for d in self.memory.rebalance(self.rel, reserve=0, dry_run=True)['demoted']], [old.strip()[:90]])
+        self.memory.event({'event': 'recall', 'request_id': 'r', 'session': 's1', 'hits': ['h']})  # now it was seen
+        self.assertEqual([d[1] for d in self.memory.rebalance(self.rel, reserve=0)['demoted']], [self.NEW.strip()[:90]])
+
+    def test_protected_and_pinned_blocks_never_move(self):
+        loose, second = '- loose old (2020-01-02) ' + 'l' * 60 + '\n', '- second old (2020-01-03) ' + 's' * 60 + '\n'
+        # Old and as long as a newer block: without protection the newer one would take their room.
+        text = ('# Working memory\n- [Preserved context](index-0123456789abcdef.md)\n\nOverview of the project (2020-01-01) '
+                + 'v' * 60 + '\n\n- pinned old (2020-01-01) ' + 'p' * 60 + '\n' + loose + '\n'
+                '## Demand\n- [hub](topics/h.md) first line (2020-01-01) ' + 'h' * 60 + '\n' + second +
+                '- [Older context](index-0123456789abcdef.md) (2020-01-01) ' + 'i' * 60 + '\n')
+        atomic(self.root / self.ctx / 'topics/h.md', 'x\n')
+        atomic(self.root / self.ctx / 'index-0123456789abcdef.md', 'x\n')
+        self.index(text, 0, [loose, second])
+        self.memory.pin(self.rel, 'pinned old')
+        result = self.memory.rebalance(self.rel, reserve=0)
+        self.assertEqual(sorted(d[1] for d in result['demoted']), [loose.strip(), second.strip()])
+        warm = read(self.memory.path(self.rel))
+        for kept in ('# Working memory', 'Overview of the project', '- pinned old', '## Demand', '- [hub]', 'index-0123456789abcdef'):
+            self.assertIn(kept, warm)
+        self.assertIn('## Demand\n- second old', read(self.memory.path(self.cold)))
+
+    def test_rebalance_is_idempotent_and_promotion_needs_the_margin(self):
+        self.index(self.TOP + self.OLD + self.NEW, len(self.NEW))
+        self.memory.rebalance(self.rel, reserve=0)
+        state = (read(self.memory.path(self.rel)), read(self.memory.path(self.cold)))
+        again = self.memory.rebalance(self.rel, reserve=0)
+        self.assertEqual(again['changed'], [])
+        self.assertEqual((read(self.memory.path(self.rel)), read(self.memory.path(self.cold))), state)
+        # Free room alone does not bring it back.
+        atomic(self.root / self.ctx / '.cap', '5000')
+        self.assertEqual(self.memory.rebalance(self.rel, reserve=0)['changed'], [])
+        # Used once now: B(old) ~ 0.39 beats B(fresh) ~ 0.35, but not by the 0.5 margin.
+        self.use(self.OLD)
+        self.assertEqual(self.memory.rebalance(self.rel, reserve=0, dry_run=True)['promoted'], [])
+        self.memory.config['salience_margin'] = 0
+        result = self.memory.rebalance(self.rel, reserve=0)
+        self.assertEqual([p[1] for p in result['promoted']], [self.OLD.strip()[:90]])
+        self.assertIn(self.OLD, read(self.memory.path(self.rel)))
+        self.assertNotIn(self.OLD, read(self.memory.path(self.cold)))
+
+    def test_promoted_block_returns_to_its_section_but_not_to_a_closed_one(self):
+        a2, b2 = '- a2 alpha (2020-01-01) ' + 'a' * 60 + '\n', '- b2 beta (2020-01-01) ' + 'b' * 60 + '\n'
+        text = '# Working memory\n\n## A\n- [a](topics/a.md)\n' + a2 + '\n## B\n- [b](topics/b.md)\n' + b2
+        for t in ('a', 'b'):
+            atomic(self.root / self.ctx / ('topics/' + t + '.md'), 'x\n')
+        self.index(text, 0, [a2, b2])
+        self.memory.rebalance(self.rel, reserve=0)
+        warm = read(self.memory.path(self.rel)).replace('## B\n- [b](topics/b.md)\n', '')  # B closed by hand
+        atomic(self.memory.path(self.rel), warm)
+        atomic(self.root / self.ctx / '.cap', '5000')
+        self.memory.config['salience_margin'] = -10
+        result = self.memory.rebalance(self.rel, reserve=0)
+        self.assertEqual([p[1] for p in result['promoted']], [a2.strip()])
+        self.assertIn('## A\n- [a](topics/a.md)\n- a2 alpha', read(self.memory.path(self.rel)))
+        self.assertIn('- b2 beta', read(self.memory.path(self.cold)))
+
+    def test_close_section_takes_its_cold_lines_to_the_hub(self):
+        a2, b2 = '- a2 alpha (2020-01-01) ' + 'a' * 60 + '\n', '- b2 beta (2020-01-01) ' + 'b' * 60 + '\n'
+        text = '# Working memory\n\n## A\n- [a](topics/a.md)\n' + a2 + '\n## B\n- [b](topics/b.md)\n' + b2
+        for t in ('a', 'b'):
+            atomic(self.root / self.ctx / ('topics/' + t + '.md'), 'x\n')
+        self.index(text, 0, [a2, b2])
+        self.memory.rebalance(self.rel, reserve=0)
+        self.assertIn(a2, read(self.memory.path(self.cold)))
+        atomic(self.root / self.ctx / '.cap', '5000')  # room for the closed pointer
+        self.memory.close_section(self.rel, 'A')
+        self.assertIn('## A\n- [a](a.md)\n' + a2, read(self.root / self.ctx / 'topics/a.md'))
+        cold = read(self.memory.path(self.cold))
+        self.assertNotIn(a2, cold)
+        self.assertIn('## A\n', cold)  # kept, like an emptied heading after a promotion
+        self.assertIn('## B\n' + b2, cold)  # another section's cold lines stay
+
+    def test_protected_lines_over_budget_fall_back_and_split_uses_rebalance(self):
+        self.index(self.TOP + self.OLD + self.NEW, len(self.NEW))
+        self.assertIn('skipped', self.memory.rebalance(self.rel, reserve=10_000))
+        self.memory.config.update(salience=True, salience_reserve=0)
+        result = self.memory.split(self.rel)  # over cap: weak lines leave, no section move, no archive
+        self.assertTrue(result['rebalanced'])
+        self.assertIsNone(result.get('archived'))
+        self.assertIn(self.OLD, read(self.memory.path(self.cold)))
+
+    def test_undated_tie_keeps_the_later_line(self):
+        a, b = '- earlier undated ' + 'a' * 100 + '\n', '- later undated ' + 'b' * 100 + '\n'
+        self.index(self.TOP + a + b, len(a), [a, b])
+        self.assertEqual([d[1] for d in self.memory.rebalance(self.rel, reserve=0)['demoted']], [a.strip()[:90]])
+
+    def test_rejected_cold_block_does_not_squeeze_out_an_index_block(self):
+        at = __import__('datetime').datetime(2026, 10, 23, tzinfo=__import__('datetime').timezone.utc)
+        big = '- big recent (2026-10-01) ' + 'g' * 123 + '\n'      # 150 chars: never fits the room of 100
+        weak = '- weak (2025-01-01) ' + 'w' * 39 + '\n'            # 60
+        cold = '- cold (2026-06-01) ' + 'c' * 39 + '\n'            # 60, between the two after the margin
+        top = self.TOP + memory_core.COLD_POINTER
+        atomic(self.memory.path(self.rel), top + big + weak)
+        atomic(self.memory.path(self.cold), memory_core.COLD_HEAD + cold)
+        atomic(self.root / self.ctx / '.cap', str(len(top) + 100))
+        result = self.memory.rebalance(self.rel, reserve=0, at=at)
+        # The cold block may not come back (the big block moved out is stronger), so it holds no room either.
+        self.assertEqual([d[1] for d in result['demoted']], [big.strip()[:90]])
+        self.assertEqual(result['promoted'], [])
+        self.assertIn(weak, read(self.memory.path(self.rel)))
+
+    def cross_setup(self, shown, own_match=True):
+        """Y and X equally old; X is later, so it wins a tie. X: one own-project match (`own_match`).
+        Y: one hit from another project's session, injected by its recall when `shown`."""
+        y, x = '- line y (2026-01-01) ' + 'y' * 100 + '\n', '- line x (2026-01-01) ' + 'x' * 100 + '\n'
+        self.index(self.TOP + y + x, len(x), [y, x])
+        if own_match:
+            self.use(x)
+        self.memory.event({'event': 'search', 'request_id': 'c', 'session': 's2',
+                           'hits': [{'id': 'k', 'source': self.rel, 'own': False, 'blocks': [memory_core.fingerprint(y)]}]})
+        if shown:
+            self.memory.event({'event': 'recall', 'request_id': 'c', 'session': 's2', 'hits': ['k']})
+        return y, x
+
+    def test_line_recalled_in_another_project_outweighs_an_own_match(self):
+        y, x = self.cross_setup(shown=True)
+        self.assertEqual([d[1] for d in self.memory.rebalance(self.rel, reserve=0)['demoted']], [x.strip()[:90]])
+
+    def test_unseen_candidate_from_another_project_is_no_credit(self):
+        y, x = self.cross_setup(shown=False, own_match=False)  # credited, Y would beat X; uncredited, the tie keeps X
+        self.assertEqual([d[1] for d in self.memory.rebalance(self.rel, reserve=0)['demoted']], [y.strip()[:90]])
+
+    def test_injected_hit_is_read_from_its_own_request(self):
+        # The same window id appears in an own-project search too; the recall names the cross one.
+        y, x = '- line y (2026-01-01) ' + 'y' * 100 + '\n', '- line x (2026-01-01) ' + 'x' * 100 + '\n'
+        self.index(self.TOP + y + x, len(x), [y, x])
+        at = memory_core.now()
+        events = [{'event': 'search', 'request_id': 'c', 'session': 's2', 'at': at,
+                   'hits': [{'id': 'k', 'source': self.rel, 'own': False, 'blocks': [memory_core.fingerprint(y)]}]},
+                  {'event': 'search', 'request_id': 'r', 'session': 's1', 'at': at,
+                   'hits': [{'id': 'k', 'source': self.rel, 'own': True, 'blocks': []}]},
+                  {'event': 'recall', 'request_id': 'c', 'session': 's2', 'at': at, 'hits': ['k']}]
+        self.assertEqual([d[1] for d in self.memory.rebalance(self.rel, reserve=0, events=events)['demoted']], [x.strip()[:90]])
+
+    def test_salience_scope_is_stores_with_a_recent_session(self):
+        atomic(self.memory.path(self.rel), self.TOP)
+        self.assertFalse(self.memory.salient(self.rel))
+        self.memory.config.update(salience=True)
+        self.assertTrue(self.memory.salient(self.rel))
+        self.memory.config.update(salience_recent_days=14)
+        self.assertFalse(self.memory.salient(self.rel))  # no session captured
+        log = self.root / self.ctx / 'transcripts/2026-01-01.md'
+        atomic(log, 'x\n')
+        self.assertTrue(self.memory.salient(self.rel))
+        os.utime(log, (0, __import__('time').time() - 15 * 86400))
+        self.assertFalse(self.memory.salient(self.rel))
+
+    def test_search_logs_blocks_and_whether_the_hit_is_own(self):
+        atomic(self.memory.path(self.rel), '# Working memory\n' + self.OLD + self.NEW)
+        atomic(self.root / 'projects/other/context/MEMORY.md', '# Other\n' + self.OLD)
+        hits = {h['source']: h for h in self.memory.search('alpha beta', self.cwd, 'all', log=False)['results']}
+        self.assertEqual(hits[self.rel]['blocks'], [memory_core.fingerprint(self.OLD)])
+        self.assertTrue(hits[self.rel]['own'])
+        other = hits['projects/other/context/MEMORY.md']
+        self.assertEqual((other['own'], other['blocks']), (False, [memory_core.fingerprint(self.OLD)]))
+
+    def test_facts_pointer_in_cold_file_is_not_added_again(self):
+        name = 'learned-' + __import__('datetime').date.today().strftime('%Y-%m') + '.md'
+        atomic(self.memory.path(self.rel), '# Working memory\n')
+        atomic(self.memory.path(self.cold), '# Cold memory\n- [Extracted candidates](topics/' + name + ') — x\n')
+        source = self.ctx + '/memory/2026-01-01.md'
+        atomic(self.memory.path(source), 'We chose X because Y.\n')
+        self.memory.facts(source, [{'text': 'X because Y', 'quote': 'We chose X because Y.'}])
+        self.assertNotIn(name, read(self.memory.path(self.rel)))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -31,6 +31,8 @@ import time
 HOME = pathlib.Path(os.environ.get('AI_MEMORY_HOME', pathlib.Path.home() / '.claude'))
 BENCH = HOME / 'data/memory-system/bench'
 MODES = ('lexical', 'semantic', 'semantic-sqlite')
+# Same list as `mem search --session` reads (memory-cli.py); kept apart: the runner never imports the core.
+SESSION_VARS = ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID', 'CODEX_SESSION_ID')
 
 
 def mem_bin():
@@ -47,7 +49,9 @@ def run_case(case, mode, k, timeout):
 
     started = time.monotonic()
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        # No session: a bench query is not use (salience credits real sessions only).
+        env = {k: v for k, v in os.environ.items() if k not in SESSION_VARS}
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         payload = json.loads(proc.stdout) if proc.stdout.strip() else {}
         error = None if proc.returncode == 0 else f'exit {proc.returncode}: {proc.stderr.strip()[:200]}'
     except subprocess.TimeoutExpired:
@@ -59,7 +63,8 @@ def run_case(case, mode, k, timeout):
     results = payload.get('results') or []
     # `source` is already relative to the memory root; compare on the raw string but
     # tolerate the truncation the CLI applies to long paths.
-    sources = [str(r.get('source', '')) for r in results]
+    # A line salience moved to MEMORY-COLD.md is still the index's content, found.
+    sources = [str(r.get('source', '')).replace('/context/MEMORY-COLD.md', '/context/MEMORY.md') for r in results]
     rank = None
     if case.get('expected'):
         # expected_any: real long prompts have more than one right page (2026-09-28).
