@@ -2,6 +2,57 @@
 
 Dates are when a change landed on `main`. Commit hashes are from this repo.
 
+## 2026-11-01
+
+Update the same way as in the 2026-09-19 entry below (`git pull origin main`, then
+`./install.sh` with `--dry-run` first).
+
+**Upgrading from an earlier install** — what changed in behavior:
+- `mem split` now moves the largest `## ` sections of an index whole to their hub
+  page (the `topics/` page linked on the section's first line) and leaves one
+  pointer line each. It archives the whole index verbatim only when no section
+  can move.
+- Salience is opt-in: `salience: true` in `config.json`. Then the daily curate
+  keeps each project index's strongest lines within cap minus
+  `salience_reserve` (default 300) and moves weak ones to `MEMORY-COLD.md`
+  beside it (still searched, not loaded at startup). Other keys:
+  `salience_margin` (0.5, needed to bring a cold line back),
+  `salience_cross_weight` (2, a recall from another project counts double) and
+  `salience_recent_days` (unset = every store; set it to touch only stores with
+  a session in that many days). Preview with `mem rebalance PATH --dry-run`.
+- `mem prepare` now refuses a `context/...` path when run from inside a project
+  store (it named the global file), and `--operation replace` on a missing file
+  (use `create`).
+- After `/clear`, the startup snapshot leaves out the latest checkpoint; it is
+  listed as omitted in `mem snapshot --json`.
+- `hooks/memory-inject.js` no longer ships. The installer does not delete it:
+  leave it or remove it yourself.
+
+**Added**
+- `mem close-section PATH "## X"`: a finished section goes to its hub,
+  together with its lines in `MEMORY-COLD.md`. (`59d5ce3`)
+- `mem rebalance`, `mem pin` and `mem unpin`. (`59d5ce3`)
+- Optional `hooks/recall-observer.py` (not shipped): its `observe(...)` sees
+  each prompt recall once decided and cannot change it; an error there only
+  logs to stderr. (`cdfe977`)
+- `check-caps` alerts on a hub page over 8000 characters; the weekly check
+  shows the page a recall opened. (`59d5ce3`)
+
+**Changed**
+- Search credits the blocks it showed (vector `excerpt_blocks`) and reads the
+  Codex session id. (`59d5ce3`)
+- The memory write procedure moved from `docs/memory-instructions.md` into the
+  `memory-write` skill. (`e63a0b4`)
+- A cap error on a salience project index suggests `mem rebalance` before
+  `mem split`. (`e63a0b4`)
+
+**Fixed**
+- A CLI search run from another project no longer credits the pages it listed:
+  an off-topic page lifted a superseded index line back to startup. Only
+  opening the page counts. (`cdfe977`)
+- The backfill log names why a summary was rejected, and the limit is 12000.
+  (`38fca2f`)
+
 ## 2026-10-12
 
 Update the same way as in the 2026-09-19 entry below (`git pull origin main`, then
