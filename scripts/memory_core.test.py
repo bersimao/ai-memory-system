@@ -408,6 +408,29 @@ class Tests(unittest.TestCase):
         omitted = self.memory.snapshot(self.cwd, checkpoint=False)['manifest']['omitted']
         self.assertTrue(any('/checkpoints/' in o['source'] for o in omitted))
 
+    def test_empty_store_proposes_same_folder_store_from_another_pc(self):
+        # 2026-11-02: the hint and the registration lived in memory-inject.js, which no hook runs.
+        other = 'projects/-home-other-work-repo/context/MEMORY.md'  # same folder name, another layout
+        atomic(self.memory.path(other), '# Context\nfrom the other PC\n')
+        self.assertNotIn('--bind', self.memory.snapshot(self.cwd)['text'], 'own store has content: no hint')
+        atomic(self.memory.path(self.rel), '')
+        text = self.memory.snapshot(self.cwd)['text']
+        self.assertIn('`-home-other-work-repo`', text)
+        self.assertIn('--bind <store> --for ' + str(self.cwd), text)
+        self.assertIn('Never bind without asking', text)
+        atomic(self.memory.path(other), '')
+        self.assertNotIn('--bind', self.memory.snapshot(self.cwd)['text'], 'empty candidate is not proposed')
+
+    def test_session_start_registers_the_store_without_waiting(self):
+        base = {'cwd': str(self.cwd), 'session_id': 's', 'hook_event_name': 'SessionStart'}
+        with patch.object(memory_core.subprocess, 'Popen') as popen:
+            hooks.handle(self.memory, base)
+        args = popen.call_args.args[0]
+        self.assertEqual(args[-2:], ['--register', str(self.cwd)])
+        self.assertTrue(popen.call_args.kwargs['start_new_session'])
+        with patch.object(memory_core.subprocess, 'Popen', side_effect=OSError('no node')):
+            self.assertIn('Memory snapshot', hooks.handle(self.memory, base), 'a failed spawn never fails the session')
+
     def seed_other(self):
         rel = 'projects/other/context/topics/retry.md'
         atomic(self.memory.path(rel), '# Retry design\nThe idempotency defect was resolved by persisting the request identifier.')

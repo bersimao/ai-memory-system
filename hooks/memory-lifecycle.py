@@ -160,6 +160,7 @@ def handle(memory, event):
                                  checkpoint=event.get('source') != 'clear')
         session = digest(event.get('session_id', 'unknown'))[:24]
         json_write(memory.state / 'snapshots' / (session + '.json'), result['manifest'])
+        memory.register(cwd)
         return result['text']
     if kind == 'UserPromptSubmit':
         started = time.monotonic()

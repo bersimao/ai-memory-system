@@ -53,12 +53,16 @@ would create an empty store. The resolver checks, in order:
 3. `registry/remotes/` — git remote + folder name -> store. The remote alone is not an
    identity: one remote can hold several projects.
 
-Registry entries are written by `node ~/.claude/hooks/project-store.js --register [dir]`
-(first writer wins) and backfilled for existing stores by `migration/register-remotes.py`
-(`--dry-run` reports only). **Known gap:** no session hook calls `--register` yet, so a
-project started after the backfill is not in the registry until you run one of them.
-On the other machine, a project that resolves to an empty store is tied by hand with
-`--bind`; the startup snapshot does not propose it yet.
+The SessionStart hook records the session's project in the registry (in the background,
+first writer wins; a store reached through the registry is never re-recorded).
+`migration/register-remotes.py` backfills stores that existed before the registry
+(`--dry-run` reports only); `node ~/.claude/hooks/project-store.js --register [dir]` does one
+directory by hand.
+
+When this project's store is empty but a store for a folder with the same name has content
+(no git remote, or one remote shared by several stores), the startup snapshot lists the
+candidates and asks the agent to confirm with you before proposing `--bind`. It never binds
+on its own.
 
 Syncing `~/.ai-memory` between machines is up to you (a private git remote). Nothing
 in the release pushes.
