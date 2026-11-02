@@ -46,6 +46,21 @@ class Tests(unittest.TestCase):
     def apply(self, change, reviewed=False):
         return self.memory.apply({'version': VERSION, 'changes': [change]}, reviewed)
 
+    def test_prepare_refuses_global_path_from_inside_a_project_store(self):
+        inside = self.root / 'projects/p/context'
+        inside.mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError, 'use projects/p/context/MEMORY.md'):
+            self.memory.check_cwd('context/MEMORY.md', inside)
+        self.memory.check_cwd('projects/p/context/MEMORY.md', inside)
+        self.memory.check_cwd('context/MEMORY.md', self.root)
+        self.memory.check_cwd('context/MEMORY.md', self.cwd)
+
+    def test_prepare_replace_refuses_missing_file(self):
+        with self.assertRaisesRegex(ValueError, 'use --operation create'):
+            self.memory.check_replace(self.ctx + '/topics/typo.md', 'replace')
+        self.memory.check_replace(self.rel, 'replace')
+        self.memory.check_replace(self.ctx + '/topics/typo.md', 'create')
+
     def test_append_journals_exact_original(self):
         before = read(self.memory.path(self.rel))
         result = self.apply(self.memory.change(self.rel, before + 'New fact.\n'))
@@ -437,6 +452,30 @@ class Tests(unittest.TestCase):
         output = hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': 'Considering idempotency was solved, what next?', 'session_id': 's'})
         self.assertIn('Project: other', output)
         self.assertIn('request identifier', output)
+
+    def test_recall_observer_sees_the_recall_and_cannot_change_it(self):
+        self.seed_other()
+        self.memory.config['automatic_recall_scope'] = 'all'
+        prompt = 'Considering idempotency was solved, what next?'
+        ask = lambda: re.sub(r'Expand: \w+:', 'Expand: ', hooks.handle(self.memory, {
+            'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': prompt, 'session_id': 's'}))
+        observer, seen = Path(self.tmp.name) / 'observer.py', Path(self.tmp.name) / 'seen.json'
+        with patch.object(hooks, 'OBSERVER', observer):
+            baseline = ask()  # no observer file: nothing to load
+            observer.write_text('import json\n'
+                                'def observe(memory, prompt, event, results, injected, floor, from_vector):\n'
+                                '    open(%r, "w").write(json.dumps([prompt, injected, list(from_vector)]))\n'
+                                '    results["results"].clear()\n' % str(seen))
+            self.assertEqual(ask(), baseline)  # mutating what it was given changes nothing injected
+            got = json.loads(seen.read_text())
+            self.assertEqual(got[0], prompt)
+            self.assertTrue(got[1])
+            self.assertEqual(got[2], [])
+            observer.write_text('def observe(*args):\n    raise RuntimeError("boom")\n')
+            err = io.StringIO()
+            with patch.object(sys, 'stderr', err):
+                self.assertEqual(ask(), baseline)  # a failing observer never costs the prompt
+            self.assertIn('boom', err.getvalue())
 
     def test_prompt_hook_floor_cue_snippet_and_recall_event(self):
         # RAG plan T2.2.
@@ -1640,6 +1679,27 @@ class Salience(unittest.TestCase):
                    'hits': [{'id': 'k', 'source': self.rel, 'own': True, 'blocks': []}]},
                   {'event': 'recall', 'request_id': 'c', 'session': 's2', 'at': at, 'hits': ['k']}]
         self.assertEqual([d[1] for d in self.memory.rebalance(self.rel, reserve=0, events=events)['demoted']], [x.strip()[:90]])
+
+    def test_cli_listing_from_another_project_credits_only_once_opened(self):
+        # 2026-10-26: another project's `mem search` listed an off-topic page of this store; the line
+        # linking it came back from the cold file. A listing there is the agent searching, not reading.
+        y, x = '- line y [p](topics/p.md) (2026-01-01) ' + 'y' * 100 + '\n', '- line x (2026-01-01) ' + 'x' * 100 + '\n'
+        atomic(self.root / self.ctx / 'topics/p.md', 'x\n')
+        self.index(self.TOP + y + x, max(len(y), len(x)), [y, x])
+        page = self.ctx + '/topics/p.md'
+        self.memory.event({'event': 'search', 'request_id': 'c', 'session': 's2', 'origin': 'cli',
+                           'hits': [{'id': 'k', 'source': page, 'own': False, 'blocks': []}]})
+        self.assertEqual([d[1] for d in self.memory.rebalance(self.rel, reserve=0, dry_run=True)['demoted']], [y.strip()[:90]])
+        self.memory.event({'event': 'open', 'request_id': 'c', 'result_id': 'k', 'session': 's2'})
+        self.assertEqual([d[1] for d in self.memory.rebalance(self.rel, reserve=0, dry_run=True)['demoted']], [x.strip()[:90]])
+
+    def test_cli_listing_in_its_own_project_still_credits(self):
+        y, x = '- line y [p](topics/p.md) (2026-01-01) ' + 'y' * 100 + '\n', '- line x (2026-01-01) ' + 'x' * 100 + '\n'
+        atomic(self.root / self.ctx / 'topics/p.md', 'x\n')
+        self.index(self.TOP + y + x, max(len(y), len(x)), [y, x])
+        self.memory.event({'event': 'search', 'request_id': 'c', 'session': 's1', 'origin': 'cli',
+                           'hits': [{'id': 'k', 'source': self.ctx + '/topics/p.md', 'own': True, 'blocks': []}]})
+        self.assertEqual([d[1] for d in self.memory.rebalance(self.rel, reserve=0)['demoted']], [x.strip()[:90]])
 
     def test_salience_scope_is_stores_with_a_recent_session(self):
         atomic(self.memory.path(self.rel), self.TOP)

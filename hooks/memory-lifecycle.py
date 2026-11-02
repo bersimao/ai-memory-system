@@ -119,6 +119,23 @@ def semantic_recall(memory, request):
     return None if 'error' in reply else reply
 
 
+# Optional local module beside this hook, not shipped: its `observe(memory, prompt, event, results,
+# injected, floor, from_vector)` sees each recall once it is decided and cannot change it.
+OBSERVER = Path(__file__).resolve().parent / 'recall-observer.py'
+
+
+def observe_recall(*args):
+    if not OBSERVER.is_file():
+        return
+    try:
+        spec = importlib.util.spec_from_file_location('recall_observer', OBSERVER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.observe(*args)
+    except Exception as error:  # an observer never costs the prompt anything
+        print('recall observer failed: %s' % error, file=sys.stderr)
+
+
 def hybrid_pick(lexical, vector, limit):
     """[(hit, from_vector)]: the lexical #1 opened the gate and keeps its slot; the others by RRF of the
     lexical and vector rankings. Bench through the hook 2026-09-28, 2,000-byte budget: long prompts 10 -> 13
@@ -248,6 +265,9 @@ def handle(memory, event):
                       'skipped': len(picks) - lexical, 'hybrid': None if vector is None else len(vector['results']),
                       'semantic': None if semantic is None else len(semantic['results']),
                       'elapsed_ms': round((time.monotonic() - started) * 1000)})
+        observe_recall(memory, prompt, event, results,
+                       [hit['source'] for hit, _ in picks if hit['id'] in injected], floor,
+                       [hit['source'] for hit, from_vector in picks if from_vector and hit['id'] in injected])
         return output
     if kind in ('Stop', 'PreCompact', 'SessionEnd'):
         capture(memory, event)

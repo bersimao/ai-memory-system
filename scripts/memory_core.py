@@ -476,6 +476,24 @@ class Memory:
             raise ValueError('writes are restricted to curated Markdown')
         return path
 
+    def check_cwd(self, relative, cwd):
+        """Paths are relative to the root, never to cwd: from inside a project store,
+        `context/X.md` names the GLOBAL file (2026-10-26 it overwrote the global MEMORY.md)."""
+        try:
+            parts = Path(cwd).resolve().relative_to(self.root.resolve()).parts
+        except ValueError:
+            return
+        if len(parts) >= 2 and parts[0] == 'projects' and relative.startswith('context/'):
+            raise ValueError(f'cwd is inside projects/{parts[1]} but the path names the global store; '
+                             f'paths are relative to the root: use projects/{parts[1]}/{relative}, '
+                             'or run from outside the store for a global write')
+
+    def check_replace(self, relative, operation):
+        """CLI only: `replace` on a missing file silently created it, so a wrong path made a stray
+        page. Internal ops (split, rebalance) still replace into new files through change()."""
+        if operation == 'replace' and not self.path(relative).exists():
+            raise ValueError(f'{relative} does not exist: replace only rewrites a file, use --operation create')
+
     def stored(self, path):
         """True when path lies under the root with no symlink between root and file.
         A link anywhere on the way (file, topics/, context/, a project dir) could
@@ -713,7 +731,7 @@ class Memory:
         matched: [(fingerprint, time)], index blocks a prompt in THIS store talked about (`blocks` on the
         hit, logged at search time); a candidate from another project nobody saw is noise, not use.
         shown: [(hit, time, weight)], pages a reader saw: injected by recall or rag-on-edit, opened, or
-        listed by a CLI search. Seen from another project weighs `salience_cross_weight` (default 2):
+        listed by a CLI search in this store's own project. Seen from another project weighs `salience_cross_weight` (default 2):
         a line two projects needed is worth more. A hit logged before `own` existed counts as own."""
         cross = float(self.config.get('salience_cross_weight', 2))
         by_request, by_id = {}, {}
@@ -737,8 +755,10 @@ class Memory:
                                 if key not in talked:
                                     talked.add(key)
                                     matched.append((fp, at))
-                        if e.get('origin') == 'cli':
-                            shown.append((h, at, 1 if h.get('own', True) else cross))
+                        # A CLI listing from another project is the agent searching, not reading: an off-topic
+                        # page it listed must not lift this store's lines. It counts once opened (`open`).
+                        if e.get('origin') == 'cli' and h.get('own', True):
+                            shown.append((h, at, 1))
                 continue
             refs = ([(e.get('request_id'), i) for i in e.get('hits', [])] if kind == 'recall' else
                     [tuple(r.split(':', 1)) for r in e.get('refs', []) if ':' in r] if kind == 'rag_edit' else
@@ -1471,6 +1491,8 @@ def main():
     elif args.command == 'apply':
         result = memory.apply(json_read(args.proposal), args.reviewed)
     elif args.command == 'prepare':
+        memory.check_cwd(args.path, os.getcwd())
+        memory.check_replace(args.path, args.operation)
         text = read(args.text_file)
         if text is None:
             raise ValueError('text file does not exist')

@@ -143,15 +143,15 @@ done
 DOT='.cla''ude'                                  # concatenated OUTSIDE quotes, or
                                                 # printf emits the two quotes literally
 printf "const p = path.join(home, '%s', 'commands', 'commit.md');\n" "$DOT" \
-  >> "$src/hooks/memory-inject.js"
+  >> "$src/hooks/transcript-capture.js"
 out=$(run --from-home); rc=$?
 if [ $rc -ne 0 ] && grep -q ABORT <<<"$out" \
-   && ! grep -q "commit.md" "$dst/hooks/memory-inject.js" 2>/dev/null; then
+   && ! grep -q "commit.md" "$dst/hooks/transcript-capture.js" 2>/dev/null; then
   ok "policy reference built with path.join is caught"
 else
   bad "path.join form slipped through; rc=$rc"
 fi
-printf 'clean\n' > "$src/hooks/memory-inject.js"; run --from-home >/dev/null 2>&1
+printf 'clean\n' > "$src/hooks/transcript-capture.js"; run --from-home >/dev/null 2>&1
 
 # 10 — the exemption list is what keeps the rule usable. cron/check-hooks.sh
 # genuinely reads the settings file; a guard that fired there would be switched
