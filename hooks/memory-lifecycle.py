@@ -157,7 +157,7 @@ def handle(memory, event):
         return ''
     if kind == 'SessionStart':
         result = memory.snapshot(cwd, int(memory.config.get('snapshot_bytes', 8000)),
-                                 checkpoint=event.get('source') != 'clear')
+                                 checkpoint=event.get('source') != 'clear', startup=True)
         session = digest(event.get('session_id', 'unknown'))[:24]
         json_write(memory.state / 'snapshots' / (session + '.json'), result['manifest'])
         memory.register(cwd)

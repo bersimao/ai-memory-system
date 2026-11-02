@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-// Shared store resolution for memory-inject.js (SessionStart) and
+// Shared store resolution for memory_core.py (SessionStart snapshot, via --resolve) and
 // transcript-capture.js (Stop). Both hooks MUST agree on the answer, so the
 // logic lives here once.
 //
@@ -297,7 +297,8 @@ if (require.main === module) {
     const dir = arg('--resolve') || process.cwd();
     const { dir: store, anchor, identity, remote, ambiguous } = storeDir(dir);
     if (argv.includes('--json')) {
-      console.log(JSON.stringify({ dir: store, anchor, identity, remote, ambiguous, root: LAYOUT.root, state: LAYOUT.state }));
+      console.log(JSON.stringify({ dir: store, anchor, identity, remote, ambiguous, root: LAYOUT.root, state: LAYOUT.state,
+        demands: demandsFor(anchor.dir) }));
       process.exit(0);
     }
     console.log(`cwd:    ${path.resolve(dir)}`);

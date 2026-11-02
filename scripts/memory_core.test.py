@@ -421,6 +421,96 @@ class Tests(unittest.TestCase):
         atomic(self.memory.path(other), '')
         self.assertNotIn('--bind', self.memory.snapshot(self.cwd)['text'], 'empty candidate is not proposed')
 
+    def neighbour(self, suffix, text='# Context\nold memory\n'):
+        name = re.sub(r'[^a-zA-Z0-9-]', '-', str(self.cwd.parent)) + '-' + suffix
+        atomic(self.memory.path(f'projects/{name}/context/MEMORY.md'), text)
+        return name
+
+    def test_rename_hint_flags_a_sibling_and_never_acts(self):
+        # Ported from memory-inject.js (dead since 2026-09-14). 2026-08-25: a second repo with a
+        # deliberately different name (66.7% similar) started empty with no warning.
+        name = self.neighbour('repo-published-thing')
+        self.assertNotIn('--pin', self.memory.snapshot(self.cwd)['text'], 'own store has content: quiet')
+        atomic(self.memory.path(self.rel), '')
+        text = self.memory.snapshot(self.cwd)['text']
+        self.assertIn('neighbouring directory', text)
+        self.assertIn(name, text)
+        self.assertIn('--pin <anchor> --for ' + str(self.cwd), text)
+        self.assertIn('Never pin without asking', text)
+        self.assertFalse((self.root / 'data/store-anchors.json').exists(), 'the hint never pins by itself')
+        atomic(self.memory.path(f'projects/{name}/context/MEMORY.md'), '')
+        self.assertNotIn('--pin', self.memory.snapshot(self.cwd)['text'], 'no populated neighbour: quiet')
+
+    def test_rename_hint_goes_quiet_once_pinned(self):
+        name = self.neighbour('repo-published-thing')
+        atomic(self.memory.path(self.rel), '')
+        other = self.cwd.parent / 'repo-published-thing'
+        (other / '.git').mkdir(parents=True)
+        subprocess.run(['node', str(BASE / 'hooks/project-store.js'), '--pin', str(other), '--for', str(self.cwd)],
+                       env={**os.environ, 'AI_MEMORY_HOME': str(self.root)}, check=True, capture_output=True)
+        text = Memory(self.root).snapshot(self.cwd)['text']
+        self.assertNotIn('--pin', text)
+        self.assertIn(name, text.split('\n[')[1], 'the pinned store is the one loaded')
+
+    def test_other_machine_hint_wins_over_rename_hint(self):
+        atomic(self.memory.path('projects/-srv-x-repo/context/MEMORY.md'), '# Context\nother PC\n')
+        atomic(self.memory.path(self.rel), '')
+        text = self.memory.snapshot(self.cwd)['text']
+        self.assertIn('--bind', text)
+        self.assertNotIn('--pin', text)
+
+    def demand(self, status='in progress', command=None):
+        note = Path(self.tmp.name) / 'note.md'
+        note.write_text(f'---\nstatus: {status}\n---\n# Demand\n')
+        json_write(self.root / 'data/demands.json', {'demands': [
+            {'name': 'Demo demand', 'client': 'ACME', 'note': str(note), 'workdir': str(self.cwd)},
+            {'name': 'Elsewhere', 'client': 'X', 'workdir': str(Path(self.tmp.name) / 'other')}]})
+        cfg = {'demand_inactive_statuses': ['Closed']}
+        if command:
+            cfg['demand_status_command'] = command
+        json_write(self.memory.layout['config'], cfg)
+        return Memory(self.root)
+
+    def test_demands_listed_and_status_command_runs_only_at_startup(self):
+        script = Path(self.tmp.name) / 'status.py'
+        script.write_text('import json,sys,pathlib\npathlib.Path(sys.argv[0]).with_suffix(".ran").write_text(" ".join(sys.argv[1:]))\n'
+                          'print(json.dumps([{"demand": n, "line": "todo: 1/2"} for n in sys.argv[1:]]))\n')
+        memory = self.demand(command=[sys.executable, str(script)])
+        plain = memory.snapshot(self.cwd)['text']
+        self.assertIn('**Demo demand** [ACME]: in progress', plain)
+        self.assertNotIn('Elsewhere', plain, 'only demands served by this anchor')
+        self.assertNotIn('todo:', plain)
+        self.assertFalse(script.with_suffix('.ran').exists(), 'mem snapshot never runs the command')
+        text = memory.snapshot(self.cwd, startup=True)['text']
+        self.assertIn('  todo: 1/2', text)
+        self.assertEqual(script.with_suffix('.ran').read_text(), 'Demo demand')
+
+    def test_demand_status_failure_is_shown_and_inactive_demands_are_skipped(self):
+        memory = self.demand(command=[sys.executable, '-c', 'import sys; sys.exit("boom")'])
+        self.assertIn('demand status failed: boom', memory.snapshot(self.cwd, startup=True)['text'])
+        memory = self.demand(status='closed', command=[sys.executable, '-c', 'import sys; sys.exit("boom")'])
+        text = memory.snapshot(self.cwd, startup=True)['text']
+        self.assertIn(': closed', text)
+        self.assertNotIn('failed', text, 'an inactive demand never runs the command')
+
+    def test_demand_status_timeout_with_partial_stderr_keeps_the_snapshot(self):
+        memory = self.demand(command=['true'])
+        memory.resolve(self.cwd)  # cached: the patch below must hit only the status command
+        error = subprocess.TimeoutExpired(['x'], 3, stderr=b'partial warning\n')
+        with patch.object(memory_core.subprocess, 'run', side_effect=error):
+            text = memory.snapshot(self.cwd, startup=True)['text']
+        self.assertIn('demand status failed: partial warning', text)
+
+    def test_startup_notes_count_against_the_budget(self):
+        memory = self.demand()
+        reg = json_read(self.root / 'data/demands.json')
+        reg['demands'][0]['name'] = 'Long demand ' * 80  # notes alone exceed the budget
+        json_write(self.root / 'data/demands.json', reg)
+        memory = Memory(self.root)
+        self.assertLessEqual(len(memory.snapshot(self.cwd, 600)['text'].encode()), 600)
+        self.assertLessEqual(len(memory.snapshot(self.cwd, 512)['text'].encode()), 512)
+        self.assertIn('startup notes', [o['source'] for o in memory.snapshot(self.cwd, 600)['manifest']['omitted']])
+
     def test_session_start_registers_the_store_without_waiting(self):
         base = {'cwd': str(self.cwd), 'session_id': 's', 'hook_event_name': 'SessionStart'}
         with patch.object(memory_core.subprocess, 'Popen') as popen:
