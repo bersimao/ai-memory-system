@@ -63,8 +63,10 @@ identifies a machine or a person". On 2026-09-01 a comment citing a section of t
 author's personal instructions file shipped in `cron/backup-push.sh` and scored
 **zero** matches — no absolute path, no username, nothing to match. Two classes of
 leak, two checks. Neither catches a client name in prose, or policy that names
-nothing ("push to main is fine here"); that is still a review question when you
-add to the MANIFEST.
+nothing ("push to main is fine here"); that is still a review question on every
+`--from-home` sync, not only when you add to the MANIFEST: grep the incoming diffs,
+test files included, for client and project names (one once arrived in a test
+comment of a file already in the MANIFEST).
 
 `CONFIG_OK` in `sync-release.sh` lists the files that legitimately operate on the
 config surface — `cron/check-hooks.sh` (reads the settings file) and

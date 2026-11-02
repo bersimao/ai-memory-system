@@ -140,6 +140,21 @@ expect_quiet NONE 2400 "store sem .cap nao escreve nada no stderr"
 expect_quiet NONE 2600 "store sem .cap, mesmo violando, stderr limpo"
 expect_quiet 4000 2600 "store com .cap valido, stderr limpo"
 
+# --- demand hubs: own alert over 8000 chars, exit code untouched -------------
+hub() {  # hub <chars> <label> <want: open|none>
+  local home ctx rc got
+  home=$(mktemp -d); ctx="$home/.claude/projects/-fake-store/context"
+  mkdir -p "$ctx/topics" "$home/.claude/logs" "$home/.claude/context"
+  python3 -c "import sys;open(sys.argv[1],'w').write('x'*int(sys.argv[2]))" "$ctx/topics/demand-1.md" "$1"
+  python3 -c "import sys;open(sys.argv[1],'w').write('x'*9000)" "$ctx/topics/notes.md"  # not a hub
+  AI_MEMORY_HOME="$home/.claude" HOME="$home" bash "$SCRIPT" >/dev/null 2>&1; rc=$?
+  got=none; grep -q 'MEMORY-HUB ALERT\] \[!\].*demand-1.md: '"$1"'/8000' -z "$home/.claude/logs/alerts.log" 2>/dev/null && got=open
+  grep -q 'notes.md' "$home/.claude/logs/alerts.log" 2>/dev/null && got=wrong-page
+  rm -rf "$home"
+  if [ "$got" = "$3" ] && [ $rc -eq 0 ]; then echo "ok   $2"; else echo "FAIL $2 — veio $got rc=$rc"; fails=$((fails + 1)); fi
+}
+hub 8001 "hub 8001 abre o alerta, rc 0" open
+hub 8000 "hub 8000 nao alerta" none
 
 [ "$fails" -eq 0 ] && echo PASS
 exit "$fails"

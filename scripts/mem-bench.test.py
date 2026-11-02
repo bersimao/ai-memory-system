@@ -32,6 +32,11 @@ if "upsert" in q.lower():
 elif "matrix" in q.lower():
     results = [hit("skills/db/references/other.md", 4.0),
                hit("skills/di/references/reference-matrix-cell-read.md", 3.1)]
+elif "cold" in q.lower():
+    results = [hit("projects/p/context/MEMORY-COLD.md", 8.0)]
+elif "session" in q.lower():  # which session variables reached `mem`
+    results = [hit(",".join(v for v in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SESSION_ID")
+                            if v in os.environ) or "none", 8.0)]
 elif "kubernetes" in q.lower():
     results = [hit("skills/db/references/noise.md", 0.4)]
 else:
@@ -89,6 +94,22 @@ class Bench(unittest.TestCase):
                 'expected': 'skills/x/none.md',
                 'expected_any': ['skills/x/none.md', 'skills/di/references/reference-matrix-cell-read.md']}
         self.assertEqual(self.bench.run_case(case, 'lexical', 5, 30)['rank'], 2)
+
+    def test_index_line_found_in_the_cold_file_counts(self):
+        case = {'id': 't5', 'query': 'cold line', 'lang': 'en', 'kind': 'prose', 'held_out': False,
+                'expected': 'projects/p/context/MEMORY.md'}
+        self.assertEqual(self.bench.run_case(case, 'lexical', 5, 30)['rank'], 1)
+
+    def test_no_session_variable_reaches_mem(self):
+        case = {'id': 't6', 'query': 'session vars', 'lang': 'en', 'kind': 'prose', 'held_out': False, 'expected': 'none'}
+        names = ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID', 'CODEX_SESSION_ID')
+        saved = {n: os.environ.get(n) for n in names}
+        os.environ.update({n: 'x' for n in names})
+        try:
+            self.assertEqual(self.bench.run_case(case, 'lexical', 5, 30)['rank'], 1)
+        finally:
+            for n, v in saved.items():
+                os.environ.pop(n, None) if v is None else os.environ.__setitem__(n, v)
 
     def test_held_out_is_excluded_by_default(self):
         ids = [r['id'] for r in self.rows(include_held_out=False)]

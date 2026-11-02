@@ -125,6 +125,13 @@ def diagnose(memory):
         for target in re.findall(r'\]\((topics/[^)]+)\)', text):
             if not (path.parent / target.split('#')[0]).exists():
                 report['issues'].append({'type': 'broken_link', 'path': str(path), 'target': target})
+    # Every archive must hang straight off the index. The old split linked each archive to the
+    # previous one, and a chain 3 deep hid its oldest context from anyone reading MEMORY.md.
+    for ctx in projects:
+        direct = set(re.findall(r'\]\((index-[0-9a-f]+\.md)\)', memory.read_stored(ctx / 'MEMORY.md') or ''))
+        for path in sorted(ctx.glob('index-*.md')):
+            if path.name not in direct and memory.stored(path):
+                report['issues'].append({'type': 'archive_not_in_index', 'path': str(path)})
     for path in symlinks(memory.root):
         report['issues'].append({'type': 'symlink_in_store', 'path': str(path)})
     for path in orphans(memory.root):

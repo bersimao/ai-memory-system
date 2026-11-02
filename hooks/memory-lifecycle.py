@@ -11,7 +11,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
-from memory_core import Memory, atomic, bounded, digest, excerpt, json_write, now, read, redact
+from memory_core import EXCERPT_BYTES, Memory, atomic, bounded, digest, excerpt, json_write, now, read, redact
 
 ABSENCE = 'No lexical matches above the recall floor in the searched scope. This is not proof of absence. Before denying prior work, try domain identifiers, the other language, or semantic search.\n'
 # Whole words only: a bare 'antes' matched inside importantes/restantes/bastantes.
@@ -119,6 +119,23 @@ def semantic_recall(memory, request):
     return None if 'error' in reply else reply
 
 
+# Optional local module beside this hook, not shipped: its `observe(memory, prompt, event, results,
+# injected, floor, from_vector)` sees each recall once it is decided and cannot change it.
+OBSERVER = Path(__file__).resolve().parent / 'recall-observer.py'
+
+
+def observe_recall(*args):
+    if not OBSERVER.is_file():
+        return
+    try:
+        spec = importlib.util.spec_from_file_location('recall_observer', OBSERVER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.observe(*args)
+    except Exception as error:  # an observer never costs the prompt anything
+        print('recall observer failed: %s' % error, file=sys.stderr)
+
+
 def hybrid_pick(lexical, vector, limit):
     """[(hit, from_vector)]: the lexical #1 opened the gate and keeps its slot; the others by RRF of the
     lexical and vector rankings. Bench through the hook 2026-09-28, 2,000-byte budget: long prompts 10 -> 13
@@ -139,7 +156,8 @@ def handle(memory, event):
     if spawned_by_claude_code(event):
         return ''
     if kind == 'SessionStart':
-        result = memory.snapshot(cwd, int(memory.config.get('snapshot_bytes', 8000)))
+        result = memory.snapshot(cwd, int(memory.config.get('snapshot_bytes', 8000)),
+                                 checkpoint=event.get('source') != 'clear')
         session = digest(event.get('session_id', 'unknown'))[:24]
         json_write(memory.state / 'snapshots' / (session + '.json'), result['manifest'])
         return result['text']
@@ -204,7 +222,7 @@ def handle(memory, event):
             if hit['score'] < floor and not (vector and rank):  # fill slots of a hybrid pick skip the lexical floor
                 continue
             if from_vector:
-                first, text = 0, bounded(hit['content'], 500)
+                first, text = 0, bounded(hit['content'], EXCERPT_BYTES)  # salience credits the blocks in this cut
             else:
                 # A 32-line window cut to 500 bytes can miss the match: cut where most matched terms fit.
                 # Only the 3 rarest: a long prompt matches a dozen common words, and one clip per term
@@ -234,7 +252,7 @@ def handle(memory, event):
                 continue
             block = '\nProject: ' + hit['project'] + '\nSource: ' + str(memory.root / hit['source']) + ':' + str(hit['line'])
             block += '\nEngine: semantic (cue-gated; relevance not scored)\nExpand: ' + semantic['request_id'] + ':' + hit['id']
-            block += '\n' + bounded(hit['content'], 500) + '\n'
+            block += '\n' + bounded(hit['content'], EXCERPT_BYTES) + '\n'
             if len((output + block).encode()) <= budget:
                 output += block
                 injected.append(hit['id'])
@@ -247,6 +265,9 @@ def handle(memory, event):
                       'skipped': len(picks) - lexical, 'hybrid': None if vector is None else len(vector['results']),
                       'semantic': None if semantic is None else len(semantic['results']),
                       'elapsed_ms': round((time.monotonic() - started) * 1000)})
+        observe_recall(memory, prompt, event, results,
+                       [hit['source'] for hit, _ in picks if hit['id'] in injected], floor,
+                       [hit['source'] for hit, from_vector in picks if from_vector and hit['id'] in injected])
         return output
     if kind in ('Stop', 'PreCompact', 'SessionEnd'):
         capture(memory, event)

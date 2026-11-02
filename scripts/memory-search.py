@@ -7,7 +7,7 @@ import sys
 import time
 import uuid
 
-from memory_core import Memory, digest, read, redact
+from memory_core import EXCERPT_BYTES, Memory, bounded, digest, read, redact, salience_labels, tokens
 
 
 # --- RAG plan T3.2: the `sqlite` engine (index.sqlite chunks + bge-m3 vectors + FTS, fused by RRF) ---
@@ -114,8 +114,9 @@ def _vector_rank(memory, query, allowed, collection, depth, embedder):
     return ranked
 
 
-def _chunk_hit(memory, db, allowed, source, line, score):
-    """The indexed chunk as a hit, or None when the file changed since it was indexed."""
+def _chunk_hit(memory, db, allowed, source, line, score, own=None, terms=frozenset()):
+    """The indexed chunk as a hit, or None when the file changed since it was indexed. `own`/`terms`:
+    the salience labels a lexical hit carries (memory_core.salience_labels)."""
     row = db.execute('SELECT c.end_line, c.content FROM chunks c JOIN docs d ON d.id = c.doc_id WHERE d.source = ? AND c.line = ?',
                      (source, line)).fetchone()
     text = memory.read_stored(memory.root / source)
@@ -125,7 +126,9 @@ def _chunk_hit(memory, db, allowed, source, line, score):
     project, kind = allowed[source]
     return {'id': digest(source + ':' + str(line) + ':' + digest(text))[:24], 'source': source,
             'project': project, 'kind': kind, 'line': line, 'end_line': row[0], 'revision': digest(text),
-            'score': score, 'content': redact(row[1])}
+            'score': score, 'content': redact(row[1]),
+            **salience_labels(own, source, text, line - 1, set(terms).intersection(tokens(row[1])), row[0] - line + 1,
+                              bounded(row[1], EXCERPT_BYTES).count('\n') + 1)}
 
 
 def vector_hits(memory, query, cwd, scope, domain, collection, limit, embedder=None):
@@ -136,7 +139,9 @@ def vector_hits(memory, query, cwd, scope, domain, collection, limit, embedder=N
         return []
     ranked = _vector_rank(memory, query, allowed, collection, limit, embedder or Embedder())
     db = memory.sdk_db()
-    hits = [_chunk_hit(memory, db, allowed, source, line, round(1 / (60 + rank), 5)) for rank, (source, line) in enumerate(ranked.items())]
+    own, terms = memory.own_context(cwd, collection), set(tokens(query))
+    hits = [_chunk_hit(memory, db, allowed, source, line, round(1 / (60 + rank), 5), own, terms)
+            for rank, (source, line) in enumerate(ranked.items())]
     db.close()
     return [h for h in hits if h]
 
@@ -162,7 +167,8 @@ def search_sqlite(memory, query, cwd, scope, domain, collection, limit, embedder
         if source in lexical:                               # already read, verified and redacted by the scan
             result.append({**lexical[source], 'score': round(score, 5)})
             continue
-        hit = _chunk_hit(memory, db, allowed, source, vec_line[source], round(score, 5))
+        hit = _chunk_hit(memory, db, allowed, source, vec_line[source], round(score, 5),
+                         memory.own_context(cwd, collection), set(tokens(query)))
         if hit:
             result.append(hit)
     db.close()
@@ -180,7 +186,7 @@ if __name__ == '__main__':
                   'elapsed_ms': round((time.monotonic() - started) * 1000)}
         if args.get('log', True):  # `mem search --auto` logs only the result it keeps
             memory.event({'event': 'search', 'request_id': result['request_id'], 'session': args.get('session'),
-                          'query_hash': digest(args['query']), 'scope': args['scope'], 'engine': result['engine'],
+                          **({'origin': args['origin']} if args.get('origin') else {}), 'query_hash': digest(args['query']), 'scope': args['scope'], 'engine': result['engine'],
                           'hits': [{k: v for k, v in h.items() if k != 'content'} for h in hits]})
         print(json.dumps(result))
     except Exception as exc:

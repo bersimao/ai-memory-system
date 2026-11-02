@@ -70,6 +70,23 @@ $(printf '%s' "$over")"
   rc=1
 fi
 
+# Demand hubs (topics/demand-*.md) only grow by append; past HUB_CAP characters their history needs
+# curating. Own marker and no effect on rc: it is not a cap violation, and curate never splits a hub.
+HUB_CAP=8000
+hubs=""
+for f in "$MEM_ROOT"/projects/*/context/topics/demand-*.md; do
+  n=$(chars "$f")
+  case "$n" in ''|*[!0-9]*) n="ILEGIVEL" ;; esac
+  [ "$n" = ILEGIVEL ] || [ "$n" -gt "$HUB_CAP" ] || continue
+  hubs="${hubs}  $(basename "$(dirname "$(dirname "$(dirname "$f")")")")/$(basename "$f"): ${n}/${HUB_CAP}"$'\n'
+done
+if [ -z "$hubs" ]; then
+  alert_ok "MEMORY-HUB ALERT" "todos os hubs de demanda dentro de ${HUB_CAP}" || rc=1
+else
+  alert "MEMORY-HUB ALERT" "$(printf '%s' "$hubs" | grep -c .) hub(s) de demanda acima de ${HUB_CAP} chars - curar: historico para baixo ou para topics/archive/
+$(printf '%s' "$hubs")" || rc=1
+fi
+
 # Close only the obsolete estimator alert; the compiler enforces its own budget.
 alert_ok "MEMORY-SNAPSHOT ALERT" "snapshot compiler now enforces a byte bound" || rc=1
 

@@ -42,7 +42,7 @@ maintenance, add entries yourself, for example with `crontab -e`:
 
 ```cron
 30 3 * * *  $HOME/.claude/cron/distill.sh   # daily: transcripts, extraction
-0  4 * * 0  $HOME/.claude/cron/curate.sh    # weekly: lossless index splitting
+0  4 * * *  $HOME/.claude/cron/curate.sh    # daily: lossless index splitting (+ salience), no model call
 ```
 
 Use your `--root` path if it differs; the cron wrappers and the `mem` CLI derive the
@@ -86,6 +86,9 @@ or optional semantic search before denying prior work.
 ~/.claude/scripts/mem prepare projects/STORE/context/topics/topic.md --text-file /tmp/addition.md --operation append --reason "decision rationale" > /tmp/proposal.json
 ~/.claude/scripts/mem apply /tmp/proposal.json
 ~/.claude/scripts/mem split projects/STORE/context/MEMORY.md
+~/.claude/scripts/mem close-section projects/STORE/context/MEMORY.md "## Finished topic"
+~/.claude/scripts/mem pin projects/STORE/context/MEMORY.md "fragment of the line to keep"
+~/.claude/scripts/mem rebalance projects/STORE/context/MEMORY.md --dry-run
 ~/.claude/scripts/mem feedback REQUEST_ID:RESULT_ID relevant
 ~/.claude/scripts/mem report
 python3 ~/.claude/scripts/memory-doctor.py
@@ -99,7 +102,9 @@ control boundary against arbitrary shell edits. Archives retain revisions, so th
 are not a privacy-erasure operation.
 
 Caps: USER 1,375 characters; global MEMORY 4,000; project MEMORY 2,500 or its `.cap`.
-Oversized indexes are split losslessly. Complete originals remain searchable as topics.
+Oversized indexes move whole `## ` sections to their hub topic pages; with nothing movable,
+the index is archived verbatim beside it. With salience on (config `salience: true`, off by
+default), weak index lines move to `MEMORY-COLD.md`: still searched, not loaded at startup.
 Search/open events have request and result IDs. Explicit relevance, use, and code-test
 feedback are separate self-reports; engagement is not a correctness metric.
 

@@ -64,6 +64,24 @@ class WeeklyCheckTests(unittest.TestCase):
         self.assertEqual(sorted(sum(low <= r['top_score'] < high for r in picked) for low, high in
                                 [(0, 7.17), (7.17, 9.17), (9.17, 99)]), [2, 2, 2])
 
+    def test_injected_row_shows_the_opener_not_the_gated_top(self):
+        # 2026-10-17 #18: the cross-project floor dropped the top hit and the hook re-opened with
+        # another page; the sheet labelled the dropped page.
+        top = {'id': 't', 'score': 9.31, 'source': 'other/learned.md', 'line': 1}
+        opener = {'id': 'o', 'score': 8.11, 'source': 'skills/x.md', 'line': 4, 'matched_terms': ['log']}
+        events = [{'event': 'search', 'request_id': 'r1', 'query_hash': 'h1', 'hits': [top, opener]},
+                  {'event': 'recall', 'request_id': 'r1', 'at': '2026-10-15', 'hits': ['o']},
+                  {'event': 'search', 'request_id': 'r2', 'query_hash': 'h2', 'hits': [dict(top)]},
+                  {'event': 'recall', 'request_id': 'r2', 'at': '2026-10-15', 'hits': ['vector-only']},
+                  {'event': 'search', 'request_id': 'r3', 'query_hash': 'h3', 'hits': [dict(top)]},
+                  {'event': 'recall', 'request_id': 'r3', 'at': '2026-10-15', 'hits': []}]
+        rows = {r['hash']: r for r in weekly.recall_rows(events, '2026-10-10')}
+        self.assertEqual((rows['h1']['source'], rows['h1']['line'], rows['h1']['top_score'], rows['h1']['opener_score']),
+                         ('skills/x.md', 4, 9.31, 8.11))
+        self.assertEqual((rows['h2']['source'], rows['h2']['opener_found']), ('other/learned.md', False))
+        self.assertEqual((rows['h3']['source'], rows['h3']['injected'], rows['h3']['opener_score']),
+                         ('other/learned.md', False, False))
+
     def test_prompt_recovered_from_session_log_by_hash(self):
         log = self.dir / 'projects' / 'p' / 's.jsonl'
         log.parent.mkdir(parents=True)
