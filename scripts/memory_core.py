@@ -103,6 +103,49 @@ def json_read(path, default=None):
     return json.loads(text) if text is not None else default
 
 
+def config_file():
+    """The one machine-local config file. It lives outside every agent-writable dir:
+    it can hold extract_command, which cron runs unsandboxed."""
+    explicit = os.environ.get('AI_MEMORY_CONFIG')
+    if explicit:
+        return Path(explicit).expanduser()
+    base = os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config'
+    return Path(base) / 'ai-memory' / 'config.json'
+
+
+def layout(root=None):
+    """Single authority on where memory lives (hooks/project-store.js mirrors it).
+
+    Split layout (config file has `home`): content and state under `home`
+    (~/.ai-memory: context/, projects/<store>/context/, state/), config and
+    store-anchors beside the config file, skills/references and Claude JSONL under
+    `sources` (~/.claude). Legacy layout (no config, or an explicit root that is not
+    the configured home, e.g. tests): everything under that one root, as before.
+    AI_MEMORY_HOME equal to `sources` also selects the split layout (legacy hook pins).
+    Logical paths (`context/..`, `projects/..`, `skills/..`) are the same in both,
+    so journal, usage and index entries survive the move."""
+    explicit = root or os.environ.get('AI_MEMORY_HOME')
+    cfg_path = config_file()
+    cfg = json_read(cfg_path, {}) if cfg_path.is_file() else {}
+    home = Path(cfg['home']).expanduser().resolve() if cfg.get('home') else None
+    sources = Path(cfg.get('sources') or CODE).expanduser().resolve()
+    # AI_MEMORY_HOME=<sources> (~/.claude) is the pre-split value still pinned in hook
+    # commands (settings.json, ~/.codex/hooks.json, whose edits Codex re-reviews): it
+    # means "the live memory", so it maps to the configured home, never the frozen copy.
+    if home and (not explicit or Path(explicit).expanduser().resolve() in (home, sources)):
+        return {'root': home, 'state': Path(cfg.get('state') or home / 'state').expanduser(),
+                'config': cfg_path, 'config_dir': cfg_path.parent, 'sources': sources,
+                'claude_projects': Path(cfg.get('claude_projects') or sources / 'projects').expanduser(),
+                'env': cfg_path.parent / 'memory.env', 'anchors': cfg_path.parent / 'store-anchors.json',
+                'demands': sources / 'data' / 'demands.json', 'code': CODE, 'split': True}
+    r = Path(explicit or Path.home() / '.claude').expanduser().resolve()
+    state = r / 'data' / 'memory-system'
+    return {'root': r, 'state': state, 'config': state / 'config.json', 'config_dir': state, 'sources': r,
+            'claude_projects': r / 'projects', 'env': r / 'data' / 'memory.env',
+            'anchors': r / 'data' / 'store-anchors.json', 'demands': r / 'data' / 'demands.json',
+            'code': CODE, 'split': False}
+
+
 def redact(text):
     text = re.sub(r'-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----', '[REDACTED]', text, flags=re.S)
     text = re.sub(r'\b(?:glpat-|gh[pousr]_|sk-|(?:sk|pk|rk)_(?:live|test)_|npm_|xox[baprs]-)[A-Za-z0-9_.-]{8,}', '[REDACTED]', text)
@@ -453,12 +496,63 @@ def sdk_chunks(text):
     return chunks
 
 
+def runtime_dir(state):
+    """Sockets and the daemon lock. In the split layout state/ is writable from the Codex
+    sandbox, which cannot connect to a Unix socket (seccomp, measured 2026-11-01) but CAN unlink
+    one: so they live in /run/user/<uid>/ai-memory (tmpfs, 0700, outside every writable root).
+    No such runtime dir (non-systemd host) -> state/, as before."""
+    run = Path('/run/user') / str(os.getuid())
+    try:
+        if run.is_dir() and run.stat().st_uid == os.getuid():
+            path = run / 'ai-memory'
+            path.mkdir(mode=0o700, exist_ok=True)
+            return path
+    except OSError:
+        pass
+    return Path(state)
+
+
+def script_layout():
+    """layout() as the scripts/cron entry points see it (same rule as scripts/mem): the code root
+    unless AI_MEMORY_HOME says otherwise. With a split config whose `sources` is this code root,
+    that maps to the configured home; any other install keeps its own root."""
+    return layout(os.environ.get('AI_MEMORY_HOME') or CODE)
+
+
 class Memory:
     def __init__(self, root=None):
-        self.root = Path(root or os.environ.get('AI_MEMORY_HOME') or Path.home() / '.claude').resolve()
-        self.state = self.root / 'data' / 'memory-system'
-        self.config = json_read(self.state / 'config.json', {})
+        self.layout = layout(root)
+        self.root = self.layout['root']
+        self.state = self.layout['state']
+        self.sources = self.layout['sources']
+        # Legacy layout keeps the socket in state/ (unchanged); split uses the runtime dir.
+        self.runtime = runtime_dir(self.state) if self.layout['split'] else self.state
+        self.config = json_read(self.layout['config'], {})
         self._stores = {}
+
+    # skills/ and references/ are read-only sources; in the split layout they stay in
+    # ~/.claude (synced with ia-skills) while memory moved out. Their logical names
+    # keep the `skills/..` prefix, so journal/usage/index entries need no rewrite.
+    SOURCE_DIRS = ('skills', 'references')
+
+    def base(self, relative):
+        """Physical root that holds a logical path."""
+        return self.sources if Path(relative).parts[:1] and Path(relative).parts[0] in self.SOURCE_DIRS else self.root
+
+    def locate(self, relative):
+        return self.base(relative) / relative
+
+    def logical(self, path):
+        """Inverse of locate(): the root-relative name stored in index and usage."""
+        path = Path(path)
+        if self.sources != self.root:
+            try:
+                rel = path.relative_to(self.sources)
+                if rel.parts[:1] and rel.parts[0] in self.SOURCE_DIRS:
+                    return str(rel)
+            except ValueError:
+                pass
+        return str(path.relative_to(self.root))
 
     def path(self, relative):
         if not isinstance(relative, str) or Path(relative).is_absolute() or '..' in Path(relative).parts:
@@ -499,10 +593,11 @@ class Memory:
         A link anywhere on the way (file, topics/, context/, a project dir) could
         point the read outside the store, even one aimed inside today."""
         try:
-            parts = Path(path).relative_to(self.root).parts
+            relative = self.logical(path)
         except ValueError:
             return False
-        return '..' not in parts and not any(self.root.joinpath(*parts[:i + 1]).is_symlink() for i in range(len(parts)))
+        base, parts = self.base(relative), Path(relative).parts
+        return '..' not in parts and not any(base.joinpath(*parts[:i + 1]).is_symlink() for i in range(len(parts)))
 
     def read_stored(self, path):
         """Store-confined read for everything that reaches a model or the context:
@@ -1049,7 +1144,7 @@ class Memory:
 
     def roots(self, cwd, scope='project', domain=None, collection='curated'):
         if collection == 'sdk':
-            return [(self.root / 'references' / '_md', 'shared/sdk', 'sdk')]
+            return [(self.sources / 'references' / '_md', 'shared/sdk', 'sdk')]
         if scope not in ('all', 'project') or collection not in ('curated', 'transcripts', 'checkpoints'):
             raise ValueError('invalid retrieval scope or collection')
         if domain and not re.fullmatch(r'[a-zA-Z0-9_-]+', domain):
@@ -1068,7 +1163,7 @@ class Memory:
         else:
             roots.extend((p, p.parent.name, 'project') for p in projects)
             roots.append((self.root / 'context', 'shared', 'shared'))
-            for skill in (self.root / 'skills').glob(domain or '*'):
+            for skill in (self.sources / 'skills').glob(domain or '*'):
                 roots.extend((skill / kind, 'shared/' + skill.name, 'knowledge') for kind in ('knowledge', 'references'))
         return roots
 
@@ -1135,7 +1230,7 @@ class Memory:
                     score = max(score, discount * _best_span(sequence, positions, gain) / norm)
                 if kind == 'knowledge':
                     score *= 1.15
-                rel = str(path.relative_to(self.root))
+                rel = self.logical(path)
                 hit = {'id': digest(rel + ':' + str(start + 1) + ':' + digest(text))[:24],
                        'source': rel, 'project': project, 'kind': kind,
                        'line': start + 1, 'end_line': min(start + 32, len(lines)),
@@ -1197,7 +1292,7 @@ class Memory:
                 text = self.read_stored(path)
                 if text is None:
                     continue
-                rel = str(path.relative_to(self.root))
+                rel = self.logical(path)
                 seen.add(rel)
                 if known.get(rel) == digest(text):
                     continue
@@ -1273,7 +1368,7 @@ class Memory:
             hit = next((h for h in event['hits'] if h['id'] == result_id), None)
             if not hit:
                 raise ValueError('result does not belong to request')
-            source = self.root / hit['source']
+            source = self.locate(hit['source'])
             if not self.stored(source):
                 raise ValueError('invalid source')
             text = self.read_stored(source)
@@ -1334,7 +1429,7 @@ class Memory:
             text = self.read_stored(path)
             if not text:
                 continue
-            rel = str(path.relative_to(self.root))
+            rel = self.logical(path)
             rendered = '\n[' + rel + ']\n' + redact(text) + '\n'
             entry = {'source': rel, 'revision': digest(text)}
             if path not in skip and len(rendered.encode()) <= available:

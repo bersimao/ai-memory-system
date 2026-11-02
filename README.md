@@ -66,6 +66,9 @@ yourself; the installer does not create one.
 
 Background extraction defaults to tool-free Claude CLI; see [runtime design](docs/model-agnostic.md).
 
+To keep the memory outside `~/.claude` (one store for several harnesses, synced between
+machines), see the optional [split layout](docs/split-layout.md).
+
 ## What happens during a session
 
 - Startup compiles a byte-bounded snapshot (8,000 bytes by default), retaining a manifest of omitted sources.

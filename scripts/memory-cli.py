@@ -37,7 +37,7 @@ def resident(memory, args, collection):
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.settimeout(left())
-            client.connect(str(memory.state / 'semantic.sock'))
+            client.connect(str(memory.runtime / 'semantic.sock'))
             client.settimeout(left())
             client.sendall((json.dumps({'query': args.query, 'cwd': args.cwd, 'scope': args.scope, 'domain': args.domain,
                                         'collection': collection, 'limit': args.top_k, 'log': False}) + '\n').encode('utf-8'))
@@ -132,7 +132,7 @@ def run():
     if output.get('semantic_error'):
         print('(semantic fallback failed, lexical shown: ' + output['semantic_error'] + ')', file=sys.stderr)
     for i, hit in enumerate(output['results'], 1):
-        print(f"{i}. [{hit['score']:.4f}] {output['request_id']}:{hit['id']}  {memory.root / hit['source']}")
+        print(f"{i}. [{hit['score']:.4f}] {output['request_id']}:{hit['id']}  {memory.locate(hit['source'])}")
         print('   Project: ' + hit['project'] + ' | ' + hit['content'].replace('\n', ' ')[:240])
 
 

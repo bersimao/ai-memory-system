@@ -4,7 +4,7 @@ set -euo pipefail
 python3 - <<'PYCODE'
 import json, os
 from pathlib import Path
-root = Path(os.environ.get('AI_MEMORY_HOME', Path.home() / '.claude'))
+root = Path(os.environ.get('AI_MEMORY_CODE') or Path.home() / '.claude')  # settings.json lives with the code, not the memory
 data = json.loads((root / 'settings.json').read_text())
 missing = [event for event in ('SessionStart', 'UserPromptSubmit', 'Stop', 'PreCompact')
            if not any('memory-lifecycle.py' in h.get('command', '')

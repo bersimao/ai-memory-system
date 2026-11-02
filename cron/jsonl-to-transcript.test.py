@@ -53,6 +53,9 @@ with tempfile.TemporaryDirectory() as root:
         'if __name__ == "__main__":\n    main()', '')
     exec(compile(src, SRC, "exec"), m.__dict__)
     m.ROOT = os.path.join(root, "projects")
+    # Legacy layout: Claude JSONL and stores share one projects/ dir. The split
+    # layout (CLAUDE_ROOT apart) is covered at the end of this file.
+    m.CLAUDE_ROOT = m.ROOT
     # Without this the Codex collector reads the real ~/.codex/sessions and
     # writes to real transcripts — exactly what happened when Codex support was
     # added: the test rewrote 17 real files, one of them losing 42k chars. The
@@ -138,6 +141,37 @@ with tempfile.TemporaryDirectory() as root:
     sys.argv = ["j"]
     m.main()
     check("store of a /tmp work dir gets no transcript", not os.path.exists(os.path.join(tmp_store, "context")))
+
+    # --- split layout ---------------------------------------------------------
+    # Memory moved to ~/.ai-memory while Claude keeps writing JSONL to ~/.claude/projects:
+    # read from CLAUDE_ROOT, write the transcript under ROOT, never next to the JSONL.
+    src_root, dst_root = os.path.join(root, "claude-projects"), os.path.join(root, "ai-memory", "projects")
+    os.makedirs(os.path.join(src_root, "-split-fixture"))
+    with open(os.path.join(src_root, "-split-fixture", "s.jsonl"), "w", encoding="utf-8") as f:
+        for i, (role, text) in enumerate(msgs):
+            f.write(json.dumps({"type": role, "message": {"role": role, "content": text},
+                                "timestamp": f"{yesterday}T1{i}:00:00+00:00"}) + "\n")
+    m.CLAUDE_ROOT, m.ROOT = src_root, dst_root
+    m.main()
+    check("split: transcript written under the memory root",
+          os.path.exists(os.path.join(dst_root, "-split-fixture", "context", "transcripts", f"{yesterday}.md")))
+    check("split: nothing written beside the Claude JSONL",
+          not os.path.exists(os.path.join(src_root, "-split-fixture", "context")))
+
+    # --- other PC: the JSONL dir is the LOCAL encoded cwd; the store comes from resolving it ---
+    os.makedirs(os.path.join(src_root, "-home-otheruser-work-demo"))
+    with open(os.path.join(src_root, "-home-otheruser-work-demo", "s.jsonl"), "w", encoding="utf-8") as f:
+        for i, (role, text) in enumerate(msgs):
+            f.write(json.dumps({"type": role, "cwd": "/srv/otheruser/work/demo", "message": {"role": role, "content": text},
+                                "timestamp": f"{yesterday}T1{i}:00:00+00:00"}) + "\n")
+    real_resolve = m.resolve_store
+    m.resolve_store = lambda cwd: "-home-alice-ai-demo" if cwd == "/srv/otheruser/work/demo" else None
+    m.main()
+    m.resolve_store = real_resolve
+    check("other PC: transcript lands in the resolved store",
+          os.path.exists(os.path.join(dst_root, "-home-alice-ai-demo", "context", "transcripts", f"{yesterday}.md")))
+    check("other PC: no store named after the local encoded cwd",
+          not os.path.exists(os.path.join(dst_root, "-home-otheruser-work-demo")))
 
 print("PASS" if not fails else f"FAILED: {len(fails)}")
 sys.exit(1 if fails else 0)

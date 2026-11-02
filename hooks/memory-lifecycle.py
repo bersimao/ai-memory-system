@@ -98,7 +98,7 @@ def spawned_by_claude_code(event):
 
 def semantic_recall(memory, request):
     """Ask the resident semantic process; wait at most `recall_semantic_timeout` (2 s), never fail the prompt."""
-    path = memory.state / 'semantic.sock'
+    path = memory.runtime / 'semantic.sock'
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.settimeout(float(memory.config.get('recall_semantic_timeout', 2)))
@@ -230,7 +230,7 @@ def handle(memory, event):
                 weight = results.get('idf', {})
                 shown = sorted(hit['matched_terms'], key=lambda t: (-weight.get(t, 0), t))[:3]
                 first, text = excerpt(hit['content'], shown, 500)
-            block = '\nProject: ' + hit['project'] + '\nSource: ' + str(memory.root / hit['source']) + ':' + str(hit['line'] + first)
+            block = '\nProject: ' + hit['project'] + '\nSource: ' + str(memory.locate(hit['source'])) + ':' + str(hit['line'] + first)
             # RAG plan T1.4, only when present: "Verified: unknown" on every hit is bytes of nothing.
             block += ('\nVerified: ' + hit['verified']) if hit.get('verified') else ''
             block += ('\nEngine: vector (hybrid fill)' if from_vector else '')
@@ -250,7 +250,7 @@ def handle(memory, event):
         for hit in (semantic or {}).get('results', []):
             if hit['source'] in seen or hit['source'] in dropped:
                 continue
-            block = '\nProject: ' + hit['project'] + '\nSource: ' + str(memory.root / hit['source']) + ':' + str(hit['line'])
+            block = '\nProject: ' + hit['project'] + '\nSource: ' + str(memory.locate(hit['source'])) + ':' + str(hit['line'])
             block += '\nEngine: semantic (cue-gated; relevance not scored)\nExpand: ' + semantic['request_id'] + ':' + hit['id']
             block += '\n' + bounded(hit['content'], EXCERPT_BYTES) + '\n'
             if len((output + block).encode()) <= budget:

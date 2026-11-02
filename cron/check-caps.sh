@@ -14,7 +14,8 @@
 set -uo pipefail
 
 LOG="$HOME/.claude/logs/cron.log"
-MEM_ROOT="${AI_MEMORY_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"  # script lives in the memory root
+eval "$(python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/memory-paths.py" --sh)" || exit 1
+MEM_ROOT="$AI_MEMORY_HOME"  # memory_core.layout(): ~/.ai-memory in the split layout
 # Alerts go to ~/.claude/logs/alerts.log, never to the Obsidian INBOX; the
 # channel and the reason live in alert.sh. /end-of-day reads that log.
 . "$(dirname "${BASH_SOURCE[0]}")/alert.sh"

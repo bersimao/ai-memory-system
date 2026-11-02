@@ -14,11 +14,11 @@
 // exists, and only one process wins.
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const { execFileSync } = require('child_process');
 
-const home = os.homedir();
-const dataDir = path.join(home, '.claude', 'data');
+const { LAYOUT } = require('./project-store.js');
+// Legacy layout kept its stamp in ~/.claude/data; the split layout keeps it in state/.
+const dataDir = LAYOUT.split ? LAYOUT.state : path.join(LAYOUT.root, 'data');
 const stamp = path.join(dataDir, 'last-capture.stamp');
 const lock = path.join(dataDir, 'capture.lock');
 const THROTTLE_MS = 6 * 60 * 60 * 1000;
@@ -44,7 +44,7 @@ try {
   try { recent = Date.now() - fs.statSync(stamp).mtimeMs < THROTTLE_MS; } catch {}
   if (!recent) {
     fs.writeFileSync(stamp, new Date().toISOString());
-    execFileSync('python3', [path.join(home, '.claude', 'cron', 'jsonl-to-transcript.py')],
+    execFileSync('python3', [path.join(LAYOUT.code, 'cron', 'jsonl-to-transcript.py')],
       { stdio: 'ignore', timeout: 5 * 60 * 1000 });
   }
 } catch {

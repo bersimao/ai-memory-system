@@ -21,6 +21,8 @@ MANIFEST=(
   hooks/memory-lifecycle.py
   scripts/memory_core.py
   scripts/memory_core.test.py
+  scripts/memory-paths.py
+  scripts/memory-layout.test.py
   scripts/memory-cli.py
   scripts/memory-maintain.py
   scripts/memory-search.py

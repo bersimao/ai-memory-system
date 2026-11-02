@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # One shared CLI; no host-specific memory database.
-# The CLI lives in <root>/scripts: an install at --root /srv/mem must not read
-# or write ~/.claude. readlink -f so a symlinked `mem` on PATH still finds it.
+# The code root is the memory root unless AI_MEMORY_HOME says otherwise: an install
+# at /srv/mem must not read or write ~/.claude. memory_core.layout() maps it to the
+# split home (~/.ai-memory) only when ~/.config/ai-memory/config.json names THIS
+# code root as its `sources`. readlink -f so a symlinked `mem` on PATH still finds it.
 here="$(dirname "$(readlink -f "$0")")"
 export AI_MEMORY_HOME="${AI_MEMORY_HOME:-$(cd "$here/.." && pwd)}"
 exec python3 "$here/memory-cli.py" "$@"

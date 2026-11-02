@@ -43,7 +43,7 @@ def symlinks(root):
     found, dirs = contexts(root)
     # Skill knowledge/ and references/ are search roots too. A linked skill (npx skills add
     # installs them as links) is fine until it carries documents the search would then drop.
-    skills = root / 'skills'
+    skills = Memory(root).sources / 'skills'
     if skills.is_symlink():
         found.append(skills)
     for skill in sorted(skills.iterdir()) if skills.is_dir() and not skills.is_symlink() else []:
@@ -139,10 +139,12 @@ def diagnose(memory):
     for path in (memory.state / 'journal').glob('*.json'):
         if json_read(path)['status'] != 'committed':
             report['issues'].append({'type': 'pending_transaction', 'path': str(path)})
-    installed = json_read(memory.state / 'installation.json', {})
+    installed = json_read(memory.layout['config_dir'] / 'installation.json', {})
     for relative, expected in installed.get('files', {}).items():
         # install.sh copies, never links: a link (or a manifest path escaping the root) is drift, not something to follow.
-        current = memory.read_stored(memory.root / relative)
+        code = memory.layout['code']
+        target = code / relative
+        current = None if '..' in Path(relative).parts or any(p.is_symlink() for p in [target, *target.parents] if p != code.parent) else read(target)
         if current is None or digest(current) != expected:
             report['issues'].append({'type': 'installation_drift', 'path': relative})
     return report

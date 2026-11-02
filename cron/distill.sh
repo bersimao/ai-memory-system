@@ -4,13 +4,15 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 # The installer puts these scripts inside the memory root, so the script's own
 # location IS the root. Without this export, an install at `--root /srv/mem`
 # had every Python step fall back to ~/.claude. An explicit env still wins.
-export AI_MEMORY_HOME="${AI_MEMORY_HOME:-$root}"
-log="$AI_MEMORY_HOME/data/memory-system/maintenance.log"
+eval "$(python3 "$root/scripts/memory-paths.py" --sh)" || exit 1  # memory_core.layout(): one rule for every entry point
+log="$AI_MEMORY_STATE/maintenance.log"
 mkdir -p "$(dirname "$log")"
 . "$root/cron/alert.sh"
 
 maintain() {
   date -Iseconds
+  # Another PC may have pushed memory since: rebase before editing it (conflict = alert, no edit lost).
+  if [ -x "$root/cron/backup-push.sh" ]; then "$root/cron/backup-push.sh" --memory-pull || true; fi
   bash "$root/cron/check-hooks.sh" || true
   bash "$root/cron/check-caps.sh" || true
   if [ -x "$root/cron/check-codex-gate.sh" ]; then "$root/cron/check-codex-gate.sh" || true; fi
