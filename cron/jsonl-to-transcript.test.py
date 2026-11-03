@@ -173,5 +173,20 @@ with tempfile.TemporaryDirectory() as root:
     check("other PC: no store named after the local encoded cwd",
           not os.path.exists(os.path.join(dst_root, "-home-otheruser-work-demo")))
 
+    # --- resolver output: the human `store:` line ends in the identity tag; the name must not ---
+    class Done:
+        def __init__(self, args):
+            self.returncode = 0
+            self.stdout = (json.dumps({"dir": "/x/projects/-home-alice-ai-demo", "identity": "path"}) if "--json" in args
+                           else "store:  /x/projects/-home-alice-ai-demo (path)\n")
+    fresh = importlib.util.module_from_spec(spec)   # m.resolve_store is stubbed above
+    spec.loader.exec_module(fresh)
+    real_run, fresh.subprocess.run = fresh.subprocess.run, lambda args, **kw: Done(args)
+    try:
+        name = fresh.resolve_store(src_root)
+    finally:
+        fresh.subprocess.run = real_run
+    check("resolver: store name carries no identity tag", name == "-home-alice-ai-demo", repr(name))
+
 print("PASS" if not fails else f"FAILED: {len(fails)}")
 sys.exit(1 if fails else 0)

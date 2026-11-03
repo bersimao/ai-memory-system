@@ -144,12 +144,12 @@ def resolve_store(cwd):
     out = None
     if os.path.isdir(cwd) and os.path.exists(STORE_RESOLVER):
         try:
-            r = subprocess.run(["node", STORE_RESOLVER, "--resolve", cwd],
+            # --json, not the human `store:` line: since 2026-11-02 that line ends in the identity
+            # (` (path)`, ` (remote ...)`), and basename() kept it, so 33 `<store> (path)` dirs appeared.
+            r = subprocess.run(["node", STORE_RESOLVER, "--json", "--resolve", cwd],
                                capture_output=True, text=True, timeout=20)
-            for line in r.stdout.splitlines():
-                if line.startswith("store:"):
-                    out = os.path.basename(line.split(":", 1)[1].strip())
-                    break
+            if r.returncode == 0:
+                out = os.path.basename(json.loads(r.stdout)["dir"]) or None
         except Exception:
             out = None
     _store_cache[cwd] = out
