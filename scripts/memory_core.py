@@ -178,6 +178,9 @@ def redact(text):
     text = re.sub(r'(?<![A-Za-z])((?:PASSWD|PWD)(?:[_-][A-Za-z0-9]+)*["\']?\s*[=:]\s*)(?:"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|[^\s;]+)', r'\1[REDACTED]', text, flags=re.I)
     text = re.sub(r'(?<![A-Za-z])((?:PASS|CREDENTIALS?)(?:[_-][A-Za-z0-9]+)*["\']?\s*[=:]\s*)(?:"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|\S+)', r'\1[REDACTED]', text)
     return re.sub(r'((?:TOKEN|SECRET|PASSWORD|SENHA|SEGREDO|API_KEY|APIKEY)(?:[_-][A-Za-z0-9]+)*["\']?\s*[=:]\s*)(?:"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|\S+)', r'\1[REDACTED]', text, flags=re.I)
+# The search token cache holds tokens() output. Bump the number when tokens() changes; a STOP_WORDS edit
+# invalidates it on its own.
+TOKEN_CACHE_VERSION = '1-' + hashlib.sha256(' '.join(sorted(STOP_WORDS)).encode()).hexdigest()[:12]
 
 
 def tokens(text):
@@ -1196,6 +1199,50 @@ class Memory:
                 seen.add(path)
                 yield path, project, kind
 
+    def token_cache(self):
+        """Per-line tokens of each curated page, kept between searches. The recall hook re-tokenized the
+        whole corpus on every prompt: 3.3 s of a 4.5 s hook on 8 MB, 14.8 s peaks past its timeout
+        (2026-11-03). Keyed by logical path, valid only while the content digest matches, so an edited
+        page is re-tokenized and a stale entry is never used. JSON, not pickle: loading it runs no code."""
+        path = self.state / 'cache' / 'search-tokens.json'
+        try:
+            data = json_read(path)
+        except (OSError, ValueError):  # unreadable or torn: rebuild, never fail the search
+            data = None
+        if not isinstance(data, dict) or data.get('version') != TOKEN_CACHE_VERSION or not isinstance(data.get('files'), dict):
+            data = {'version': TOKEN_CACHE_VERSION, 'files': {}}
+        return {'path': path, 'data': data, 'seen': set(), 'dirty': False}
+
+    def line_tokens(self, cache, key, revision, lines):
+        if cache is None:
+            return [tokens(line) for line in lines]
+        cache['seen'].add(key)
+        entry = cache['data']['files'].get(key)
+        if isinstance(entry, list) and len(entry) == 2 and entry[0] == revision and len(entry[1]) == len(lines):
+            return [line.split(' ') if line else [] for line in entry[1]]
+        words = [tokens(line) for line in lines]
+        # A token never holds a space ([\w.-]+), so one string per line round-trips exactly.
+        cache['data']['files'][key] = [revision, [' '.join(line) for line in words]]
+        cache['dirty'] = True
+        return words
+
+    def save_token_cache(self, cache, prune=False):
+        """Writes only when a page was (re)tokenized. Only a search over the whole curated corpus
+        prunes: a project-scoped one has not seen the other stores' pages and must not drop them."""
+        if cache is None:
+            return
+        files = cache['data']['files']
+        if prune and set(files) - cache['seen']:
+            for key in set(files) - cache['seen']:
+                del files[key]
+            cache['dirty'] = True
+        if not cache['dirty']:
+            return
+        try:  # concurrent sessions: atomic replace, last writer wins; a lost entry is just re-tokenized
+            atomic(cache['path'], json.dumps(cache['data'], ensure_ascii=False, separators=(',', ':')))
+        except OSError as error:
+            print('search token cache not saved: %s' % error, file=sys.stderr)
+
     def search(self, query, cwd, scope='project', domain=None, limit=5, session=None, collection='curated', log=True, min_terms=1, origin=None):
         if collection == 'sdk':
             return self.search_fts(query, limit, session, log)
@@ -1206,6 +1253,7 @@ class Memory:
         own = self.own_context(cwd, collection)
         if terms:
             windows, df, n_docs = [], {}, 0
+            cache = self.token_cache() if collection == 'curated' else None
             for path, project, kind in self.documents(cwd, scope, domain, collection):
                 text = self.read_stored(path)
                 if not text:
@@ -1214,19 +1262,25 @@ class Memory:
                 # Complete headings/paragraphs retain source line numbers. Long
                 # sections are found by matching windows, then read by source ID.
                 lines = text.splitlines()
+                # Once per page, not per window: 8,526 digests and 5,730 path resolutions for 1,085
+                # pages on one query (2026-11-03).
+                rel, revision = self.logical(path), digest(text)
+                line_words = self.line_tokens(cache, rel, revision, lines)
                 # RAG plan T1.4: frontmatter `verified:` is the applicability signal; absent -> None.
                 head = re.match(r'---\n(.*?)\n---', text, re.S)
                 verified = next(iter(re.findall(r'^verified:\s*(\S+)', head.group(1), re.M)), None) if head else None
                 in_doc = set()
                 for start in range(0, len(lines), 24):
-                    content = '\n'.join(lines[start:start + 32])
-                    words = tokens(content)
+                    # A token never spans lines, so a window's tokens are its lines' tokens in order.
+                    words = [w for line in line_words[start:start + 32] for w in line]
                     common = terms.intersection(words)
                     if common:
+                        content = '\n'.join(lines[start:start + 32])
                         in_doc |= common
-                        windows.append((path, project, kind, text, lines, start, content, words, common, verified))
+                        windows.append((rel, revision, project, kind, text, lines, start, content, words, common, verified))
                 for w in in_doc:
                     df[w] = df.get(w, 0) + 1
+            self.save_token_cache(cache, prune=scope == 'all' and domain is None)
             # IDF (BM25 form), RAG plan T2.1: without it a token in most of the corpus
             # ("sap", "b1") weighed like a rare one, and an off-topic query scored 3.48 on
             # those two alone, above real hits. Measured on the Stage 0 benchmark 2026-09-21.
@@ -1237,7 +1291,7 @@ class Memory:
             positions = {}
             for i, w in enumerate(sequence):
                 positions.setdefault(w, []).append(i)
-            for path, project, kind, text, lines, start, content, words, common, verified in windows:
+            for rel, revision, project, kind, text, lines, start, content, words, common, verified in windows:
                 norm = math.sqrt(max(1, len(words)) / 50)
                 gain = {w: idf[w] * (1 + math.log1p(words.count(w))) for w in common}
                 score = sum(gain.values()) / norm * len(common) / len(terms)
@@ -1245,12 +1299,13 @@ class Memory:
                     score = max(score, discount * _best_span(sequence, positions, gain) / norm)
                 if kind == 'knowledge':
                     score *= 1.15
-                rel = self.logical(path)
-                hit = {'id': digest(rel + ':' + str(start + 1) + ':' + digest(text))[:24],
+                # `content` is redacted below, on the hits returned: redacting all 2,475 matched
+                # windows of one query cost 3.2 s (2026-11-03). Unredacted text never leaves search().
+                hit = {'id': digest(rel + ':' + str(start + 1) + ':' + revision)[:24],
                        'source': rel, 'project': project, 'kind': kind,
                        'line': start + 1, 'end_line': min(start + 32, len(lines)),
-                       'revision': digest(text), 'score': round(score, 4),
-                       'matched_terms': sorted(common), 'verified': verified, 'content': redact(content)}
+                       'revision': revision, 'score': round(score, 4),
+                       'matched_terms': sorted(common), 'verified': verified, 'content': content}
                 hit.update(salience_labels(own, rel, text, start, common))
                 hits.append(hit)
         hits.sort(key=lambda x: (-x['score'], x['source'], x['line']))
@@ -1260,6 +1315,7 @@ class Memory:
             # filtering after truncation let one-term hits hide a valid later one.
             if hit['source'] in sources or len(hit['matched_terms']) < min_terms:
                 continue
+            hit['content'] = redact(hit['content'])
             selected.append(hit)
             sources.add(hit['source'])
             if len(selected) >= limit:

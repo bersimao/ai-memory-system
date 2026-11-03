@@ -549,6 +549,29 @@ class Tests(unittest.TestCase):
         self.apply(self.memory.change(self.rel, read(self.memory.path(self.rel)) + 'zebracache fixed'))
         self.assertTrue(self.memory.search('zebracache', self.cwd)['results'])
 
+    def test_search_token_cache_is_reused_private_and_survives_corruption(self):
+        cache = self.memory.state / 'cache' / 'search-tokens.json'
+        self.assertTrue(self.memory.search('validation', self.cwd)['results'])
+        self.assertEqual(cache.stat().st_mode & 0o777, 0o600)
+        with patch('memory_core.tokens', wraps=memory_core.tokens) as spy:
+            self.assertTrue(self.memory.search('validation', self.cwd)['results'])
+        # Page lines come from the cache. (Salience still tokenizes the block of a returned MEMORY.md hit.)
+        self.assertNotIn('Never disable validation.', [call.args[0] for call in spy.call_args_list])
+        atomic(cache, '{"version": "%s", "files": {"x": [' % memory_core.TOKEN_CACHE_VERSION)
+        self.assertTrue(self.memory.search('validation', self.cwd)['results'])
+        self.assertIn(self.rel, json_read(cache)['files'])
+
+    def test_search_token_cache_prunes_only_on_a_full_corpus_search(self):
+        other = 'projects/other/context/MEMORY.md'
+        atomic(self.memory.path(other), '# Other\nvalidation elsewhere\n')
+        cache = self.memory.state / 'cache' / 'search-tokens.json'
+        self.memory.search('validation', self.cwd, 'all')
+        self.memory.search('validation', self.cwd, 'project')
+        self.assertIn(other, json_read(cache)['files'])  # unseen by a project search, kept
+        self.memory.path(other).unlink()
+        self.memory.search('validation', self.cwd, 'all')
+        self.assertNotIn(other, json_read(cache)['files'])
+
     def test_expand_belongs_to_request_and_revision(self):
         first = self.memory.search('validation', self.cwd)
         hit = first['results'][0]
