@@ -260,5 +260,11 @@ class Tests(unittest.TestCase):
         self.assertIn('do NOT run the in-session /save', out)
 
 
+    def test_one_huge_turn_says_it_was_clipped(self):
+        self.jsonl.write_text(turn('user', 'x' * 500) + '\n')
+        with patch.object(save, 'MAX_CHARS', 200):
+            code, out = self.run_save(self.reply())
+        self.assertIn('CLIPPED: one turn over 200 chars', out)
+
 if __name__ == '__main__':
     unittest.main()
