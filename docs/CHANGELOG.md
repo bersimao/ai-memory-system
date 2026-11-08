@@ -32,6 +32,9 @@ Update the same way as in the 2026-09-19 entry below (`git pull origin main`, th
 **Fixed**
 - A single turn over 600k characters is reported as CLIPPED instead of being cut
   without notice. (`f146f86`)
+- `cron/check-caps.test.sh` no longer writes into the real alert log when
+  `CLAUDE_ALERT_LOG` is set in your environment; its hub cases read the wrong file
+  and failed.
 
 ## 2026-11-01
 
