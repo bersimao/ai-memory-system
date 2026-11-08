@@ -9,6 +9,10 @@ set -uo pipefail
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-caps.sh"
 fails=0
+# alert.sh prefers CLAUDE_ALERT_LOG over the throwaway root: inherited from the user's environment,
+# every case wrote fake-store alerts into the real alerts.log (left a false open MEMORY-HUB alert,
+# 2026-11-08) and the hub cases read the wrong file. Each case's log is under its own $home.
+unset CLAUDE_ALERT_LOG
 
 # run <cap-file-content|NONE> <chars> -> exit code; sets $LOGLINE to the
 # violation the script reported ("<n>/<cap>"), empty when it reported none.
