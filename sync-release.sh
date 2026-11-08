@@ -25,6 +25,8 @@ MANIFEST=(
   scripts/memory-layout.test.py
   scripts/memory-cli.py
   scripts/memory-maintain.py
+  scripts/memory-save.py
+  scripts/memory-save.test.py
   scripts/memory-search.py
   scripts/memory-doctor.py
   scripts/memory-import-codex.py
