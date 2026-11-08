@@ -49,8 +49,15 @@ SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['saves',
                            'properties': {'what': {'type': 'string'}, 'why': {'type': 'string'}}}}}}
 
 
+def projects_dir(memory):
+    """Claude Code's session JSONL folder: from the layout when the core has one (split layout),
+    else `<root>/projects`, the single-root install."""
+    layout = getattr(memory, 'layout', None) or {}
+    return Path(layout.get('claude_projects') or memory.root / 'projects')
+
+
 def session_jsonl(memory, session):
-    hits = sorted(Path(memory.layout['claude_projects']).glob('*/' + session + '.jsonl'))
+    hits = sorted(projects_dir(memory).glob('*/' + session + '.jsonl'))
     if not hits:
         raise FileNotFoundError('no transcript for session ' + session)
     return hits[0]
