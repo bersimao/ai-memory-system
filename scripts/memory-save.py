@@ -346,8 +346,12 @@ def main():
         if total > MAX_CHARS and i > start:
             end = i  # the rest is read by the next run: the cursor stops here, nothing is skipped
             break
-    source = render(lines[start:end])[:MAX_CHARS]
-    report = {'store': store, 'lines': [start, end], 'chars': len(source), 'truncated': end < len(lines)}
+    source = render(lines[start:end])
+    # One turn alone over MAX_CHARS (a huge paste) cannot be split by lines: its end is cut, and said so.
+    clipped = len(source) - MAX_CHARS if len(source) > MAX_CHARS else 0
+    source = source[:MAX_CHARS]
+    report = {'store': store, 'lines': [start, end], 'chars': len(source), 'truncated': end < len(lines),
+              'clipped': clipped}
     if not source.strip():
         print('nothing new since the last /save in this session')
         print_main(load_pending(json_read(cursor_file, {})), [])
@@ -417,7 +421,9 @@ def main():
         print(('DRY RUN - ' if args.dry_run else '') + 'headless save (' + args.model + ', $' +
               str(round(meta.get('total_cost_usd') or 0, 4)) + ', ' + str(report['chars']) + ' chars' +
               (', PARTIAL: lines ' + str(start) + '-' + str(end) + ' of ' + str(len(lines)) + ', run again for the rest'
-               if report['truncated'] else '') + ')')
+               if report['truncated'] else '') +
+              (', CLIPPED: one turn over ' + str(MAX_CHARS) + ' chars, its last ' + str(clipped) +
+               ' chars were not read' if clipped else '') + ')')
         for s in saved:
             first = s['added'].strip().splitlines()[0] if s['added'].strip() else ''
             print('saved  ' + s['path'] + ' (' + s['op'] + '): ' + first[:140])
