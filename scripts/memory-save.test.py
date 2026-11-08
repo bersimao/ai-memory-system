@@ -42,13 +42,13 @@ class Tests(unittest.TestCase):
         self.store = self.memory.resolve(self.cwd)['relative']
         self.index = self.store + '/context/MEMORY.md'
         atomic(self.memory.path(self.index), '# Working memory\n- old line\n')
-        self.jsonl = Path(self.memory.layout['claude_projects']) / 'p' / (SID + '.jsonl')
+        self.jsonl = save.projects_dir(self.memory) / 'p' / (SID + '.jsonl')
         self.jsonl.parent.mkdir(parents=True)
         self.jsonl.write_text(turn('user', 'we decided X') + '\n' + turn('assistant', 'ok, X because Y') + '\n')
         self.cursor = self.memory.state / 'save-cursor' / (SID + '.json')
 
     def config(self, **keys):
-        json_write(self.memory.layout['config'], keys)
+        json_write(self.memory.state / 'config.json', keys)  # single-root config
 
     def run_save(self, reply, *extra, fail=None):
         def fake(memory, source, instruction, **kw):
