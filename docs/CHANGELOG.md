@@ -2,6 +2,37 @@
 
 Dates are when a change landed on `main`. Commit hashes are from this repo.
 
+## 2026-11-08
+
+Update the same way as in the 2026-09-19 entry below (`git pull origin main`, then
+`./install.sh` with `--dry-run` first).
+
+**Upgrading from an earlier install** — what changed in behavior:
+- Nothing changes until you use it. The headless save is a new script; no hook or
+  schedule calls it. Wire it as a command of your own (see the README).
+- `generate()` in `scripts/memory-maintain.py` takes `model`, `timeout` and `env`.
+  The defaults (Haiku, 180 s, the current environment) keep the nightly extraction
+  as it was.
+
+**Added**
+- `scripts/memory-save.py`: the write step of a "save this session" command, run
+  by a tool-free `claude -p` (Sonnet by default) instead of your main model. It
+  reads only the transcript added since its last run, writes one journaled batch,
+  and hands back what it could not write, grouped by kind (`other-repo`,
+  `protected`, `correction`, `cap`, `other`), until cleared by id. Optional
+  config keys: `save_protected_command`, `save_protected_hint`,
+  `save_status_command`. (`016d68b`, `3ba0b9a`)
+- `scripts/memory-save.test.py`: 24 cases (allowed paths, caps, possible
+  secrets, unlinked pages, the cursor, interrupted batches, dry runs). (`016d68b`)
+
+**Changed**
+- README reorganized: release-tag and other badges, the banner back at the top, a
+  Features list and a Headless save section. (`6892caa`)
+
+**Fixed**
+- A single turn over 600k characters is reported as CLIPPED instead of being cut
+  without notice. (`f146f86`)
+
 ## 2026-11-01
 
 Update the same way as in the 2026-09-19 entry below (`git pull origin main`, then
