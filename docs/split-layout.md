@@ -56,7 +56,8 @@ would create an empty store. The resolver checks, in order:
 The SessionStart hook records the session's project in the registry (in the background,
 first writer wins; a store reached through the registry is never re-recorded).
 `migration/register-remotes.py` backfills stores that existed before the registry
-(`--dry-run` reports only); `node ~/.claude/hooks/project-store.js --register [dir]` does one
+(`--dry-run` reports only; `--root DIR`, repeatable, also scans the git repos under DIR);
+`node ~/.claude/hooks/project-store.js --register [dir]` does one
 directory by hand.
 
 When this project's store is empty but a store for a folder with the same name has content

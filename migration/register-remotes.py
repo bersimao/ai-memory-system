@@ -3,13 +3,13 @@
 
 A store's name is its encoded anchor path, which is not reversible, so the anchor dirs are
 recovered from what recorded a cwd: Claude Code JSONL (`cwd` field), Codex rollouts
-(`session_meta`), demands.json workdirs, store pins, and git repos under ~/ai, ~/repos and
-repos_local. Each candidate is resolved with
-project-store.js on THIS machine; it is registered only when it resolves to an existing store.
+(`session_meta`), demands.json workdirs, store pins, and git repos under each --root.
+Each candidate is resolved with project-store.js on THIS machine; it is registered only when it resolves to an existing store.
 First writer wins, so re-running is safe.
 
-  register-remotes.py            register and report
-  register-remotes.py --dry-run  report only
+  register-remotes.py                       register and report
+  register-remotes.py --dry-run             report only
+  register-remotes.py --root ~/repos [...]  also scan git repos under DIR (repeatable)
 """
 import glob
 import json
@@ -42,7 +42,7 @@ def first_cwd(path, key):
     return None
 
 
-def candidates(layout):
+def candidates(layout, roots):
     found = set()
     for jsonl in glob.glob(os.path.join(layout['claude_projects'], '*', '*.jsonl')):
         cwd = first_cwd(jsonl, lambda e: e.get('cwd'))
@@ -59,8 +59,8 @@ def candidates(layout):
                 found.add(w)
     anchors = json.loads(Path(layout['anchors']).read_text()) if Path(layout['anchors']).is_file() else {}
     found.update(anchors)
-    # Repos with no recent session log: any git repo under the usual roots (depth 4).
-    for base in (Path.home() / 'ai', Path.home() / 'repos', *Path('/mnt/c/Users').glob('*/repos_local')):
+    # Repos with no recent session log: any git repo under the given roots (depth 4).
+    for base in roots:
         for git in [*base.glob('*/.git'), *base.glob('*/*/.git'), *base.glob('*/*/*/.git'), *base.glob('*/*/*/*/.git')]:
             found.add(str(git.parent))
     return sorted(c for c in found if os.path.isdir(c) and not c.startswith('/tmp/'))
@@ -68,12 +68,13 @@ def candidates(layout):
 
 def main():
     dry = '--dry-run' in sys.argv
+    roots = [Path(sys.argv[i + 1]).expanduser() for i, a in enumerate(sys.argv[:-1]) if a == '--root']
     layout = json.loads(subprocess.run([sys.executable, str(HOOK.parent.parent / 'scripts/memory-paths.py'), '--json'],
                                        capture_output=True, text=True, check=True).stdout)
     projects = Path(layout['root']) / 'projects'
     stores = {p.name for p in projects.iterdir() if p.is_dir()}
     covered, results = set(), []
-    for cwd in candidates(layout):
+    for cwd in candidates(layout, roots):
         r = node('--json', '--resolve', cwd)
         if not r:
             continue
