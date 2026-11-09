@@ -3,16 +3,44 @@
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"$HOME/.claude/hooks/memory-inject.js\"", "timeout": 5 },
-          { "type": "command", "command": "node \"$HOME/.claude/hooks/capture-maintenance.js\"", "async": true }
+          {
+            "type": "command",
+            "command": "env AI_MEMORY_HOME=\"$HOME/.claude\" python3 \"$HOME/.claude/hooks/memory-lifecycle.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "env AI_MEMORY_HOME=\"$HOME/.claude\" python3 \"$HOME/.claude/hooks/memory-lifecycle.py\"",
+            "timeout": 10
+          }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"$HOME/.claude/hooks/transcript-capture.js\"" },
-          { "type": "command", "command": "node \"$HOME/.claude/hooks/daily-log-nudge.js\"" }
+          {
+            "type": "command",
+            "command": "env AI_MEMORY_HOME=\"$HOME/.claude\" python3 \"$HOME/.claude/hooks/memory-lifecycle.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "env AI_MEMORY_HOME=\"$HOME/.claude\" python3 \"$HOME/.claude/hooks/memory-lifecycle.py\"",
+            "timeout": 10
+          }
         ]
       }
     ]

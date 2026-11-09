@@ -28,8 +28,10 @@ import subprocess
 import sys
 import time
 
-HOME = pathlib.Path(os.environ.get('AI_MEMORY_HOME', pathlib.Path.home() / '.claude'))
-BENCH = HOME / 'data/memory-system/bench'
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from memory_core import layout  # noqa: E402  path resolution only; search still runs through `mem`
+HOME = pathlib.Path(__file__).resolve().parent.parent  # code root: scripts/mem
+BENCH = layout()['state'] / 'bench'
 MODES = ('lexical', 'semantic', 'semantic-sqlite')
 # Same list as `mem search --session` reads (memory-cli.py); kept apart: the runner never imports the core.
 SESSION_VARS = ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID', 'CODEX_SESSION_ID')

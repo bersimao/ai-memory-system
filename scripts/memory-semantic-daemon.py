@@ -25,7 +25,7 @@ IDLE_SECONDS = 1800
 
 
 def socket_path(memory):
-    return memory.state / 'semantic.sock'
+    return memory.runtime / 'semantic.sock'
 
 
 def answer(memory, request, search, vectors=None):
@@ -81,7 +81,7 @@ def serve(memory, server, search, idle=IDLE_SECONDS, vectors=None):
 def main():
     memory = Memory()
     memory.state.mkdir(parents=True, exist_ok=True)
-    with (memory.state / 'semantic-daemon.lock').open('a') as lock:
+    with (memory.runtime / 'semantic-daemon.lock').open('a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

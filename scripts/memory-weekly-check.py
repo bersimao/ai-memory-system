@@ -94,7 +94,7 @@ def recall_rows(events, since):
 def prompts_by_hash(root, wanted):
     """Recover prompt text from Claude Code session logs; the events keep only a hash."""
     found = {}
-    for path in (root / 'projects').glob('*/*.jsonl'):
+    for path in Memory(root).layout['claude_projects'].glob('*/*.jsonl'):
         try:
             lines = path.open(encoding='utf-8', errors='ignore')
         except OSError:
@@ -157,7 +157,7 @@ def main():
 
     run = weekly / (today + '.json')
     previous = sorted(p for p in weekly.glob('*.json') if p.name < run.name)
-    bench = subprocess.run([sys.executable, str(root / 'scripts/mem-bench.py'), '--modes', 'lexical', '--include-held-out',
+    bench = subprocess.run([sys.executable, str(memory.layout['code'] / 'scripts/mem-bench.py'), '--modes', 'lexical', '--include-held-out',
                             '--floor', str(floor), '--json', str(run)], capture_output=True, text=True, timeout=1800)
     cases = memory.state / 'bench' / 'cases.jsonl'
     known = {c['id'] for c in map(json.loads, filter(str.strip, cases.read_text(encoding='utf-8').splitlines()))
@@ -187,7 +187,7 @@ def main():
             'logados, nao rotular.', '']
     for i, r in enumerate(picked):
         try:
-            lines = (root / r['source']).read_text(encoding='utf-8').splitlines()
+            lines = memory.locate(r['source']).read_text(encoding='utf-8').splitlines()
             snippet = ' | '.join(x.strip() for x in lines[r['line'] - 1:r['line'] + 12] if x.strip())[:300]
         except OSError:
             snippet = '(fonte sumiu)'
@@ -213,12 +213,12 @@ def main():
             findings.append('casos ausentes acima do piso %.2f: %s' % (floor, ', '.join('%s=%.2f' % c for c in summary['absent_over_floor'])))
         if drop:
             findings.append('recall@5 caiu de %.0f%% para %.0f%% nos %d casos em comum' % (drop[0] * 100, drop[1] * 100, drop[2]))
-    env = read_env(root / 'data/memory.env')
+    env = read_env(memory.layout['env'])
     if not env.get('CLAUDE_MEM_INBOX'):
         print(report)
         return
     resume = config.get('weekly_check_workdir', '')
-    demands = json_read(root / 'data/demands.json', {})
+    demands = json_read(memory.layout['demands'], {})
     demand = next((d['name'] for d in (demands if isinstance(demands, list) else demands.get('demands', [])) if isinstance(d, dict) and d.get('workdir') == resume), None)
     bench_line = summary.get('error') and 'falhou' or 'recall@5 %.0f%%, absent_ok %.0f%%, p50 %s ms' % (
         summary['recall@5'] * 100, summary['absent_ok'] * 100, summary['p50_ms'])

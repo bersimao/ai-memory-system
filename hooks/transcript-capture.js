@@ -89,14 +89,14 @@ try {
 
 if (!lastAssistant) process.exit(0);
 
-// Same anchor as memory-inject.js — the repo, not the cwd (see project-store.js).
+// Same anchor as the SessionStart snapshot — the repo, not the cwd (see project-store.js).
 // Both hooks must land in the same store or the Stop hook writes transcripts the
 // next SessionStart will never read.
 const { storeDir } = require('./project-store.js');
 const { dir: projectDir } = storeDir(cwd, transcriptPath);
 
 const dir = path.join(projectDir, 'context', 'transcripts');
-// LOCAL date, like every other component (memory-inject, daily-log-nudge,
+// LOCAL date, like every other component (memory_core snapshot, daily-log-nudge,
 // jsonl-to-transcript). toISOString() is UTC: west of Greenwich an evening
 // session landed in TOMORROW's transcript, and backfill distilled it into the
 // wrong day's log.

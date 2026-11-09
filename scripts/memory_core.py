@@ -103,6 +103,64 @@ def json_read(path, default=None):
     return json.loads(text) if text is not None else default
 
 
+def config_file():
+    """The one machine-local config file. It lives outside every agent-writable dir:
+    it can hold extract_command, which cron runs unsandboxed."""
+    explicit = os.environ.get('AI_MEMORY_CONFIG')
+    if explicit:
+        return Path(explicit).expanduser()
+    base = os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config'
+    return Path(base) / 'ai-memory' / 'config.json'
+
+
+def layout(root=None):
+    """Single authority on where memory lives (hooks/project-store.js mirrors it).
+
+    Split layout (config file has `home`): content and state under `home`
+    (~/.ai-memory: context/, projects/<store>/context/, state/), config and
+    store-anchors beside the config file, skills/references and Claude JSONL under
+    `sources` (~/.claude). Legacy layout (no config, or an explicit root that is not
+    the configured home, e.g. tests): everything under that one root, as before.
+    AI_MEMORY_HOME equal to `sources` also selects the split layout (legacy hook pins).
+    Logical paths (`context/..`, `projects/..`, `skills/..`) are the same in both,
+    so journal, usage and index entries survive the move."""
+    explicit = root or os.environ.get('AI_MEMORY_HOME')
+    cfg_path = config_file()
+    cfg = json_read(cfg_path, {}) if cfg_path.is_file() else {}
+    home = Path(cfg['home']).expanduser().resolve() if cfg.get('home') else None
+    sources = Path(cfg.get('sources') or CODE).expanduser().resolve()
+    # AI_MEMORY_HOME=<sources> (~/.claude) is the pre-split value still pinned in hook
+    # commands (settings.json, ~/.codex/hooks.json, whose edits Codex re-reviews): it
+    # means "the live memory", so it maps to the configured home, never the frozen copy.
+    if home and (not explicit or Path(explicit).expanduser().resolve() in (home, sources)):
+        return {'root': home, 'state': Path(cfg.get('state') or home / 'state').expanduser(),
+                'config': cfg_path, 'config_dir': cfg_path.parent, 'sources': sources,
+                'claude_projects': Path(cfg.get('claude_projects') or sources / 'projects').expanduser(),
+                'env': cfg_path.parent / 'memory.env', 'anchors': cfg_path.parent / 'store-anchors.json',
+                'demands': sources / 'data' / 'demands.json', 'code': CODE, 'split': True}
+    r = Path(explicit or Path.home() / '.claude').expanduser().resolve()
+    state = r / 'data' / 'memory-system'
+    return {'root': r, 'state': state, 'config': state / 'config.json', 'config_dir': state, 'sources': r,
+            'claude_projects': r / 'projects', 'env': r / 'data' / 'memory.env',
+            'anchors': r / 'data' / 'store-anchors.json', 'demands': r / 'data' / 'demands.json',
+            'code': CODE, 'split': False}
+
+
+def fold(text):
+    return ''.join(c for c in unicodedata.normalize('NFKD', str(text).casefold()) if not unicodedata.combining(c))
+
+
+def similarity(a, b):
+    """1 - Levenshtein distance / longer length."""
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return 1 - prev[-1] / max(len(a), len(b), 1)
+
+
 def redact(text):
     text = re.sub(r'-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----', '[REDACTED]', text, flags=re.S)
     text = re.sub(r'\b(?:glpat-|gh[pousr]_|sk-|(?:sk|pk|rk)_(?:live|test)_|npm_|xox[baprs]-)[A-Za-z0-9_.-]{8,}', '[REDACTED]', text)
@@ -120,6 +178,9 @@ def redact(text):
     text = re.sub(r'(?<![A-Za-z])((?:PASSWD|PWD)(?:[_-][A-Za-z0-9]+)*["\']?\s*[=:]\s*)(?:"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|[^\s;]+)', r'\1[REDACTED]', text, flags=re.I)
     text = re.sub(r'(?<![A-Za-z])((?:PASS|CREDENTIALS?)(?:[_-][A-Za-z0-9]+)*["\']?\s*[=:]\s*)(?:"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|\S+)', r'\1[REDACTED]', text)
     return re.sub(r'((?:TOKEN|SECRET|PASSWORD|SENHA|SEGREDO|API_KEY|APIKEY)(?:[_-][A-Za-z0-9]+)*["\']?\s*[=:]\s*)(?:"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|\S+)', r'\1[REDACTED]', text, flags=re.I)
+# The search token cache holds tokens() output. Bump the number when tokens() changes; a STOP_WORDS edit
+# invalidates it on its own.
+TOKEN_CACHE_VERSION = '1-' + hashlib.sha256(' '.join(sorted(STOP_WORDS)).encode()).hexdigest()[:12]
 
 
 def tokens(text):
@@ -453,12 +514,63 @@ def sdk_chunks(text):
     return chunks
 
 
+def runtime_dir(state):
+    """Sockets and the daemon lock. In the split layout state/ is writable from the Codex
+    sandbox, which cannot connect to a Unix socket (seccomp, measured 2026-11-01) but CAN unlink
+    one: so they live in /run/user/<uid>/ai-memory (tmpfs, 0700, outside every writable root).
+    No such runtime dir (non-systemd host) -> state/, as before."""
+    run = Path('/run/user') / str(os.getuid())
+    try:
+        if run.is_dir() and run.stat().st_uid == os.getuid():
+            path = run / 'ai-memory'
+            path.mkdir(mode=0o700, exist_ok=True)
+            return path
+    except OSError:
+        pass
+    return Path(state)
+
+
+def script_layout():
+    """layout() as the scripts/cron entry points see it (same rule as scripts/mem): the code root
+    unless AI_MEMORY_HOME says otherwise. With a split config whose `sources` is this code root,
+    that maps to the configured home; any other install keeps its own root."""
+    return layout(os.environ.get('AI_MEMORY_HOME') or CODE)
+
+
 class Memory:
     def __init__(self, root=None):
-        self.root = Path(root or os.environ.get('AI_MEMORY_HOME') or Path.home() / '.claude').resolve()
-        self.state = self.root / 'data' / 'memory-system'
-        self.config = json_read(self.state / 'config.json', {})
+        self.layout = layout(root)
+        self.root = self.layout['root']
+        self.state = self.layout['state']
+        self.sources = self.layout['sources']
+        # Legacy layout keeps the socket in state/ (unchanged); split uses the runtime dir.
+        self.runtime = runtime_dir(self.state) if self.layout['split'] else self.state
+        self.config = json_read(self.layout['config'], {})
         self._stores = {}
+
+    # skills/ and references/ are read-only sources; in the split layout they stay in
+    # ~/.claude (synced with ia-skills) while memory moved out. Their logical names
+    # keep the `skills/..` prefix, so journal/usage/index entries need no rewrite.
+    SOURCE_DIRS = ('skills', 'references')
+
+    def base(self, relative):
+        """Physical root that holds a logical path."""
+        return self.sources if Path(relative).parts[:1] and Path(relative).parts[0] in self.SOURCE_DIRS else self.root
+
+    def locate(self, relative):
+        return self.base(relative) / relative
+
+    def logical(self, path):
+        """Inverse of locate(): the root-relative name stored in index and usage."""
+        path = Path(path)
+        if self.sources != self.root:
+            try:
+                rel = path.relative_to(self.sources)
+                if rel.parts[:1] and rel.parts[0] in self.SOURCE_DIRS:
+                    return str(rel)
+            except ValueError:
+                pass
+        return str(path.relative_to(self.root))
 
     def path(self, relative):
         if not isinstance(relative, str) or Path(relative).is_absolute() or '..' in Path(relative).parts:
@@ -499,10 +611,11 @@ class Memory:
         A link anywhere on the way (file, topics/, context/, a project dir) could
         point the read outside the store, even one aimed inside today."""
         try:
-            parts = Path(path).relative_to(self.root).parts
+            relative = self.logical(path)
         except ValueError:
             return False
-        return '..' not in parts and not any(self.root.joinpath(*parts[:i + 1]).is_symlink() for i in range(len(parts)))
+        base, parts = self.base(relative), Path(relative).parts
+        return '..' not in parts and not any(base.joinpath(*parts[:i + 1]).is_symlink() for i in range(len(parts)))
 
     def read_stored(self, path):
         """Store-confined read for everything that reaches a model or the context:
@@ -1049,7 +1162,7 @@ class Memory:
 
     def roots(self, cwd, scope='project', domain=None, collection='curated'):
         if collection == 'sdk':
-            return [(self.root / 'references' / '_md', 'shared/sdk', 'sdk')]
+            return [(self.sources / 'references' / '_md', 'shared/sdk', 'sdk')]
         if scope not in ('all', 'project') or collection not in ('curated', 'transcripts', 'checkpoints'):
             raise ValueError('invalid retrieval scope or collection')
         if domain and not re.fullmatch(r'[a-zA-Z0-9_-]+', domain):
@@ -1068,7 +1181,7 @@ class Memory:
         else:
             roots.extend((p, p.parent.name, 'project') for p in projects)
             roots.append((self.root / 'context', 'shared', 'shared'))
-            for skill in (self.root / 'skills').glob(domain or '*'):
+            for skill in (self.sources / 'skills').glob(domain or '*'):
                 roots.extend((skill / kind, 'shared/' + skill.name, 'knowledge') for kind in ('knowledge', 'references'))
         return roots
 
@@ -1086,6 +1199,50 @@ class Memory:
                 seen.add(path)
                 yield path, project, kind
 
+    def token_cache(self):
+        """Per-line tokens of each curated page, kept between searches. The recall hook re-tokenized the
+        whole corpus on every prompt: 3.3 s of a 4.5 s hook on 8 MB, 14.8 s peaks past its timeout
+        (2026-11-03). Keyed by logical path, valid only while the content digest matches, so an edited
+        page is re-tokenized and a stale entry is never used. JSON, not pickle: loading it runs no code."""
+        path = self.state / 'cache' / 'search-tokens.json'
+        try:
+            data = json_read(path)
+        except (OSError, ValueError):  # unreadable or torn: rebuild, never fail the search
+            data = None
+        if not isinstance(data, dict) or data.get('version') != TOKEN_CACHE_VERSION or not isinstance(data.get('files'), dict):
+            data = {'version': TOKEN_CACHE_VERSION, 'files': {}}
+        return {'path': path, 'data': data, 'seen': set(), 'dirty': False}
+
+    def line_tokens(self, cache, key, revision, lines):
+        if cache is None:
+            return [tokens(line) for line in lines]
+        cache['seen'].add(key)
+        entry = cache['data']['files'].get(key)
+        if isinstance(entry, list) and len(entry) == 2 and entry[0] == revision and len(entry[1]) == len(lines):
+            return [line.split(' ') if line else [] for line in entry[1]]
+        words = [tokens(line) for line in lines]
+        # A token never holds a space ([\w.-]+), so one string per line round-trips exactly.
+        cache['data']['files'][key] = [revision, [' '.join(line) for line in words]]
+        cache['dirty'] = True
+        return words
+
+    def save_token_cache(self, cache, prune=False):
+        """Writes only when a page was (re)tokenized. Only a search over the whole curated corpus
+        prunes: a project-scoped one has not seen the other stores' pages and must not drop them."""
+        if cache is None:
+            return
+        files = cache['data']['files']
+        if prune and set(files) - cache['seen']:
+            for key in set(files) - cache['seen']:
+                del files[key]
+            cache['dirty'] = True
+        if not cache['dirty']:
+            return
+        try:  # concurrent sessions: atomic replace, last writer wins; a lost entry is just re-tokenized
+            atomic(cache['path'], json.dumps(cache['data'], ensure_ascii=False, separators=(',', ':')))
+        except OSError as error:
+            print('search token cache not saved: %s' % error, file=sys.stderr)
+
     def search(self, query, cwd, scope='project', domain=None, limit=5, session=None, collection='curated', log=True, min_terms=1, origin=None):
         if collection == 'sdk':
             return self.search_fts(query, limit, session, log)
@@ -1096,6 +1253,7 @@ class Memory:
         own = self.own_context(cwd, collection)
         if terms:
             windows, df, n_docs = [], {}, 0
+            cache = self.token_cache() if collection == 'curated' else None
             for path, project, kind in self.documents(cwd, scope, domain, collection):
                 text = self.read_stored(path)
                 if not text:
@@ -1104,19 +1262,25 @@ class Memory:
                 # Complete headings/paragraphs retain source line numbers. Long
                 # sections are found by matching windows, then read by source ID.
                 lines = text.splitlines()
+                # Once per page, not per window: 8,526 digests and 5,730 path resolutions for 1,085
+                # pages on one query (2026-11-03).
+                rel, revision = self.logical(path), digest(text)
+                line_words = self.line_tokens(cache, rel, revision, lines)
                 # RAG plan T1.4: frontmatter `verified:` is the applicability signal; absent -> None.
                 head = re.match(r'---\n(.*?)\n---', text, re.S)
                 verified = next(iter(re.findall(r'^verified:\s*(\S+)', head.group(1), re.M)), None) if head else None
                 in_doc = set()
                 for start in range(0, len(lines), 24):
-                    content = '\n'.join(lines[start:start + 32])
-                    words = tokens(content)
+                    # A token never spans lines, so a window's tokens are its lines' tokens in order.
+                    words = [w for line in line_words[start:start + 32] for w in line]
                     common = terms.intersection(words)
                     if common:
+                        content = '\n'.join(lines[start:start + 32])
                         in_doc |= common
-                        windows.append((path, project, kind, text, lines, start, content, words, common, verified))
+                        windows.append((rel, revision, project, kind, text, lines, start, content, words, common, verified))
                 for w in in_doc:
                     df[w] = df.get(w, 0) + 1
+            self.save_token_cache(cache, prune=scope == 'all' and domain is None)
             # IDF (BM25 form), RAG plan T2.1: without it a token in most of the corpus
             # ("sap", "b1") weighed like a rare one, and an off-topic query scored 3.48 on
             # those two alone, above real hits. Measured on the Stage 0 benchmark 2026-09-21.
@@ -1127,7 +1291,7 @@ class Memory:
             positions = {}
             for i, w in enumerate(sequence):
                 positions.setdefault(w, []).append(i)
-            for path, project, kind, text, lines, start, content, words, common, verified in windows:
+            for rel, revision, project, kind, text, lines, start, content, words, common, verified in windows:
                 norm = math.sqrt(max(1, len(words)) / 50)
                 gain = {w: idf[w] * (1 + math.log1p(words.count(w))) for w in common}
                 score = sum(gain.values()) / norm * len(common) / len(terms)
@@ -1135,12 +1299,13 @@ class Memory:
                     score = max(score, discount * _best_span(sequence, positions, gain) / norm)
                 if kind == 'knowledge':
                     score *= 1.15
-                rel = str(path.relative_to(self.root))
-                hit = {'id': digest(rel + ':' + str(start + 1) + ':' + digest(text))[:24],
+                # `content` is redacted below, on the hits returned: redacting all 2,475 matched
+                # windows of one query cost 3.2 s (2026-11-03). Unredacted text never leaves search().
+                hit = {'id': digest(rel + ':' + str(start + 1) + ':' + revision)[:24],
                        'source': rel, 'project': project, 'kind': kind,
                        'line': start + 1, 'end_line': min(start + 32, len(lines)),
-                       'revision': digest(text), 'score': round(score, 4),
-                       'matched_terms': sorted(common), 'verified': verified, 'content': redact(content)}
+                       'revision': revision, 'score': round(score, 4),
+                       'matched_terms': sorted(common), 'verified': verified, 'content': content}
                 hit.update(salience_labels(own, rel, text, start, common))
                 hits.append(hit)
         hits.sort(key=lambda x: (-x['score'], x['source'], x['line']))
@@ -1150,6 +1315,7 @@ class Memory:
             # filtering after truncation let one-term hits hide a valid later one.
             if hit['source'] in sources or len(hit['matched_terms']) < min_terms:
                 continue
+            hit['content'] = redact(hit['content'])
             selected.append(hit)
             sources.add(hit['source'])
             if len(selected) >= limit:
@@ -1197,7 +1363,7 @@ class Memory:
                 text = self.read_stored(path)
                 if text is None:
                     continue
-                rel = str(path.relative_to(self.root))
+                rel = self.logical(path)
                 seen.add(rel)
                 if known.get(rel) == digest(text):
                     continue
@@ -1273,7 +1439,7 @@ class Memory:
             hit = next((h for h in event['hits'] if h['id'] == result_id), None)
             if not hit:
                 raise ValueError('result does not belong to request')
-            source = self.root / hit['source']
+            source = self.locate(hit['source'])
             if not self.stored(source):
                 raise ValueError('invalid source')
             text = self.read_stored(source)
@@ -1312,7 +1478,7 @@ class Memory:
                 latest = event
         return latest.get('refs', [])
 
-    def snapshot(self, cwd, budget=8000, checkpoint=True):
+    def snapshot(self, cwd, budget=8000, checkpoint=True, startup=False):
         if budget < 512:
             raise ValueError('snapshot budget must be at least 512 bytes')
         store = self.resolve(cwd)
@@ -1330,11 +1496,17 @@ class Memory:
         suffix = '\nOmitted sources remain available through memory search; a missing excerpt does not imply absent memory.\n'
         output = bounded(prefix, 400)
         available = budget - len(output.encode()) - len(suffix.encode())
+        notes = self.startup_notes(store, startup)
+        if notes and len(notes.encode()) <= available:
+            output += notes
+            available -= len(notes.encode())
+        elif notes:
+            manifest['omitted'].append({'source': 'startup notes', 'revision': digest(notes)})
         for path in candidates:
             text = self.read_stored(path)
             if not text:
                 continue
-            rel = str(path.relative_to(self.root))
+            rel = self.logical(path)
             rendered = '\n[' + rel + ']\n' + redact(text) + '\n'
             entry = {'source': rel, 'revision': digest(text)}
             if path not in skip and len(rendered.encode()) <= available:
@@ -1346,6 +1518,140 @@ class Memory:
         output += suffix
         manifest['bytes'] = len(output.encode())
         return {'text': output, 'manifest': manifest}
+
+    def startup_notes(self, store, startup=False):
+        """Session-start notes about where this project's memory lives: a store from another PC,
+        a renamed or second repo of the same project, and the demands registered for it. Each is
+        a question for the user, never an action. `startup` allows the side-effecting demand status
+        command (it may record state); `mem snapshot` and tests run without it."""
+        hint = self.other_machine_hint(store) or self.rename_hint(store)
+        return hint + self.demands_note(store, startup)
+
+    @staticmethod
+    def _has_content(ctx):
+        def has(p):
+            try:
+                return p.is_file() and p.stat().st_size > 0 or p.is_dir() and any(p.iterdir())
+            except OSError:
+                return False
+        return any(has(ctx / name) for name in ('MEMORY.md', 'memory', 'transcripts'))
+
+    def rename_hint(self, store):
+        """An empty store next to a populated one usually means the project directory was RENAMED
+        (names stay close) or this is a SECOND REPO of the same project (names deliberately differ:
+        claude-mem / ai-memory-system scored 66.7%, so siblings are found by the shared encoded
+        parent dir instead). The first Stop writes a transcript, so it quiets itself. Never merges."""
+        projects = self.root / 'projects'
+        own = Path(store['dir']).name
+        if self._has_content(projects / own / 'context'):
+            return ''
+        parent = re.sub(r'[^a-zA-Z0-9-]', '-', str(Path(store['anchor']['dir']).parent)) + '-'
+        best = None
+        try:
+            names = sorted(p.name for p in projects.iterdir() if p.name != own)
+        except OSError:
+            names = []
+        for name in names:
+            ctx = projects / name / 'context'
+            if not self._has_content(ctx):
+                continue
+            sim = similarity(name, own)
+            sibling = len(parent) > 1 and name.startswith(parent)
+            if (sim < 0.85 and not sibling) or (best and sim <= best[1]):
+                continue
+            last = max([(ctx / sub).stat().st_mtime for sub in ('MEMORY.md', 'memory', 'transcripts')
+                        if (ctx / sub).exists()] or [0])
+            best = (name, sim, last, sibling)
+        if not best:
+            return ''
+        name, sim, last, sibling = best
+        how = 'a store for a neighbouring directory has content' if sibling and sim < 0.85 else 'a similar store has content'
+        return (f"\nThis project's memory store is empty, but {how}:\n- `{projects / name}`\n"
+                f"- similarity {sim * 100:.0f}%, last activity {dt.date.fromtimestamp(last).isoformat()}\n"
+                "If the project directory was RENAMED, that store is this project's orphaned memory: "
+                "tell the user and offer to merge its context/ into this store.\n"
+                "If this is a SECOND REPO of the same project (source + published, app + infra), "
+                "the two should share one store: tell the user and offer to pin it:\n"
+                f"`node {CODE / 'hooks/project-store.js'} --pin <anchor> --for {store['anchor']['dir']}`\n"
+                "Never pin without asking: merging two projects' memory is a worse error than leaving them apart. "
+                "If this is a new project that merely sits next door, ignore this.\n")
+
+    def demands_note(self, store, startup=False):
+        """Demands registered for this anchor (demands file, matched by project-store.js). Optional
+        `demand_status_command` in config: argv run once with the active demand names appended,
+        printing JSON [{"demand", "line"}]; only at session start, capped at 3 s, a failure is shown.
+        `demand_inactive_statuses`: note statuses that skip the command."""
+        demands = store.get('demands') or []
+        if not demands:
+            return ''
+
+        def status(note):
+            text = (read(Path(note).expanduser()) or '') if note else ''
+            match = re.match(r'---\n(.*?)(?:\n---|\Z)', text, re.S)
+            found = match and re.search(r'^status:\s*(.+)$', match.group(1), re.M)
+            return found.group(1).strip().strip('\'"') if found else ''
+
+        statuses = {d.get('name'): status(d.get('note')) for d in demands}
+        inactive = {fold(s) for s in self.config.get('demand_inactive_statuses', [])}
+        command = self.config.get('demand_status_command')
+        lines = {}
+        active = [d['name'] for d in demands if d.get('note') and fold(statuses[d['name']]) not in inactive]
+        if startup and command and active:
+            try:
+                out = subprocess.run([*map(os.path.expanduser, command), *active], capture_output=True, text=True, timeout=3, check=True).stdout
+                lines = {r['demand']: r['line'] for r in json.loads(out)}
+            except Exception as error:  # shown, never hidden: a silent miss reads as "nothing pending"
+                why = getattr(error, 'stderr', None) or ''
+                if isinstance(why, bytes):  # TimeoutExpired keeps raw bytes even with text=True
+                    why = why.decode('utf-8', 'replace')
+                why = (why or str(error)).strip().splitlines()
+                lines = {n: 'demand status failed: ' + (why[-1] if why else type(error).__name__)[:120] for n in active}
+        body = ''
+        for d in demands:
+            body += f"- **{d.get('name')}** [{d.get('client', '')}]: {statuses[d.get('name')] or 'no status'}\n"
+            if d.get('note'):
+                body += f"  note: {d['note']}\n"
+            if d.get('workdir') and d['workdir'] != store['anchor']['dir']:
+                body += f"  workdir: {d['workdir']}\n"
+            if lines.get(d.get('name')):
+                body += f"  {lines[d['name']]}\n"
+        return '\nDemands on this project (from the demands registry):\n' + body
+
+    def other_machine_hint(self, store):
+        """This project's store is empty, but a store for a folder with the same name has content:
+        maybe the same project, made on another PC (other username or layout) with nothing portable
+        tying it here (no git remote, or one remote shared by several stores). Only the user can
+        say; binding is per machine and explicit, never automatic."""
+        has_content = self._has_content
+        projects = self.root / 'projects'
+        own = Path(store['dir']).name
+        if has_content(projects / own / 'context'):
+            return ''
+        tail = '-' + re.sub(r'[^a-zA-Z0-9-]', '-', Path(store['anchor']['dir']).name)
+        try:
+            names = sorted(p.name for p in projects.iterdir() if p.name.endswith(tail))
+        except OSError:
+            names = []
+        found = list(dict.fromkeys([*(store.get('ambiguous') or []), *names]))
+        found = [n for n in found if n != own and has_content(projects / n / 'context')][:5]
+        if not found:
+            return ''
+        return ('\nThis project\'s memory store is empty, but stores for a folder with the same name have content '
+                '(possibly this project, created on another PC):\n' + ''.join(f'- `{n}`\n' for n in found) +
+                'Ask the user whether one of them is this project. If yes, tie it on this machine:\n'
+                f'`node {CODE / "hooks/project-store.js"} --bind <store> --for {store["anchor"]["dir"]}`\n'
+                'Never bind without asking.\n')
+
+    def register(self, cwd):
+        """Record cwd's git remote -> its own store, so another PC resolves the same memory.
+        project-store.js skips a store reached through the registry or not made yet; first
+        writer wins. Detached and never waited on: a session start must not slow down or fail."""
+        try:
+            subprocess.Popen(['node', str(CODE / 'hooks/project-store.js'), '--register', str(cwd)],
+                             env={**os.environ, 'AI_MEMORY_HOME': str(self.root)}, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            pass
 
     def checkpoint(self, cwd, session, text, cursor):
         store = self.resolve(cwd)['relative']

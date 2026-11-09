@@ -9,7 +9,8 @@
 set -uo pipefail
 # Same root rule as distill.sh: the script lives inside the memory root, an
 # explicit AI_MEMORY_HOME still wins.
-R="${AI_MEMORY_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"
+R="$(cd "$(dirname "$0")/.." && pwd)"  # code root: scripts, cron, logs
+eval "$(python3 "$R/scripts/memory-paths.py" --sh)" || exit 1  # memory root: AI_MEMORY_HOME
 LOG="$R/logs/cron.log"
 mkdir -p "$R/logs"
 # RAG plan T1.1/T1.3: generated pages + FTS5 sdk index.
@@ -20,9 +21,9 @@ mkdir -p "$R/logs"
 pre_rc=0
 if [ -f "$R/cron/build-system-map.py" ] || [ -f "$R/scripts/sdk-to-md.py" ]; then
   {
-    AI_MEMORY_HOME="$R" /usr/bin/python3 "$R/cron/build-system-map.py" &&
-    /usr/bin/python3 "$R/scripts/sdk-to-md.py" "$R" &&
-    /usr/bin/python3 "$R/scripts/memory-index.py" --root "$R" --collection sdk
+    /usr/bin/python3 "$R/cron/build-system-map.py" &&
+    /usr/bin/python3 "$R/scripts/sdk-to-md.py" "$AI_MEMORY_SOURCES" &&
+    /usr/bin/python3 "$R/scripts/memory-index.py" --root "$AI_MEMORY_HOME" --collection sdk
   } >>"$LOG" 2>&1
   pre_rc=$?
 fi
@@ -34,7 +35,7 @@ fi
 # WSL went OOM on 2026-09-27. Own alert, because nothing else reads cron.log.
 . "$R/cron/alert.sh"
 for coll in curated transcripts; do
-  if ( ulimit -v 10000000; timeout 2h /usr/bin/python3 "$R/scripts/memory-index.py" --root "$R" --collection "$coll" ) \
+  if ( ulimit -v 10000000; timeout 2h /usr/bin/python3 "$R/scripts/memory-index.py" --root "$AI_MEMORY_HOME" --collection "$coll" ) \
       >>"$LOG" 2>&1; then
     alert_ok "SQLITE-INDEX ALERT $coll" "$coll reindexado e embutido" || pre_rc=1
   else

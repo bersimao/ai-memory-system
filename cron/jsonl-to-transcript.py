@@ -21,14 +21,21 @@ is revertible; run it on a clean tree.
 """
 import json, os, glob, sys, datetime, collections, subprocess
 
-MEMORY_ROOT = os.environ.get("AI_MEMORY_HOME", os.path.expanduser("~/.claude"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "scripts"))
+from memory_core import layout  # noqa: E402  path resolution only
+_LAYOUT = layout()
+MEMORY_ROOT = str(_LAYOUT["root"])
+# Destination: memory stores (<root>/projects/<store>/context/transcripts).
 ROOT = os.path.join(MEMORY_ROOT, "projects")
+# Source: Claude Code's own <projects>/<encoded-cwd>/*.jsonl. Same dir as ROOT in the
+# legacy layout; ~/.claude/projects in the split one (Claude writes there, not us).
+CLAUDE_ROOT = str(_LAYOUT["claude_projects"])
 # Codex writes rollouts to ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl, and
 # the cwd lives in session_meta rather than in the directory name. Same
 # project, same memory: both agents write to the SAME day transcript, ordered
 # by timestamp. Absent = nothing happens; nobody needs Codex installed.
 CODEX_SESSIONS = os.path.expanduser("~/.codex/sessions")
-STORE_RESOLVER = os.path.join(MEMORY_ROOT, "hooks", "project-store.js")
+STORE_RESOLVER = os.path.join(str(_LAYOUT["code"]), "hooks", "project-store.js")
 TODAY = datetime.date.today().isoformat()
 # ponytail: flat per-day cap. A day that overflows loses its tail rather than
 # bloating the L3 index; raise if truncation markers start showing up often.
@@ -63,6 +70,23 @@ def blocks_to_text(content):
         if isinstance(b, dict) and b.get("type") == "text":
             out.append(str(b.get("text", "")))
     return "\n".join(out)
+
+
+def dir_cwd(project_dir):
+    """The cwd Claude Code recorded for this project dir (all its sessions share one)."""
+    for j in sorted(glob.glob(os.path.join(project_dir, "*.jsonl"))):
+        try:
+            with open(j, encoding="utf-8", errors="replace") as fh:
+                for _, line in zip(range(200), fh):
+                    try:
+                        cwd = json.loads(line).get("cwd")
+                    except Exception:
+                        continue
+                    if isinstance(cwd, str) and cwd.startswith("/"):
+                        return cwd
+        except OSError:
+            continue
+    return None
 
 
 def collect(project_dir):
@@ -120,12 +144,12 @@ def resolve_store(cwd):
     out = None
     if os.path.isdir(cwd) and os.path.exists(STORE_RESOLVER):
         try:
-            r = subprocess.run(["node", STORE_RESOLVER, "--resolve", cwd],
+            # --json, not the human `store:` line: since 2026-11-02 that line ends in the identity
+            # (` (path)`, ` (remote ...)`), and basename() kept it, so 33 `<store> (path)` dirs appeared.
+            r = subprocess.run(["node", STORE_RESOLVER, "--json", "--resolve", cwd],
                                capture_output=True, text=True, timeout=20)
-            for line in r.stdout.splitlines():
-                if line.startswith("store:"):
-                    out = os.path.basename(line.split(":", 1)[1].strip())
-                    break
+            if r.returncode == 0:
+                out = os.path.basename(json.loads(r.stdout)["dir"]) or None
         except Exception:
             out = None
     _store_cache[cwd] = out
@@ -198,10 +222,15 @@ def main():
     # becomes ONE transcript, ordered by timestamp — not two files competing
     # for the same name, nor the second overwriting the first.
     merged = collections.defaultdict(lambda: collections.defaultdict(list))
-    for pd in sorted(glob.glob(os.path.join(ROOT, "*"))):
-        if not os.path.isdir(pd):
+    for src in sorted(glob.glob(os.path.join(CLAUDE_ROOT, "*"))):
+        if not os.path.isdir(src):
             continue
-        for day, entries in collect(pd).items():
+        # The Claude dir name is THIS machine's encoded cwd: on another PC (other username or
+        # layout) it named a new store. Resolve the recorded cwd like the hooks do (anchor,
+        # pins, git-remote registry); the dir name is only the fallback when there is no cwd.
+        cwd = dir_cwd(src)
+        pd = os.path.join(ROOT, (resolve_store(cwd) if cwd else None) or os.path.basename(src))
+        for day, entries in collect(src).items():
             merged[pd][day].extend(entries)
     for store, by_day in collect_codex().items():
         for day, entries in by_day.items():

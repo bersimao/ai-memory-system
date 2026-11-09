@@ -21,6 +21,8 @@ MANIFEST=(
   hooks/memory-lifecycle.py
   scripts/memory_core.py
   scripts/memory_core.test.py
+  scripts/memory-paths.py
+  scripts/memory-layout.test.py
   scripts/memory-cli.py
   scripts/memory-maintain.py
   scripts/memory-save.py
@@ -35,7 +37,6 @@ MANIFEST=(
   hooks/daily-log-nudge.test.js
   hooks/project-store.js
   hooks/project-store.test.js
-  hooks/memory-inject.test.js
   cron/curate.sh
   cron/curate-audit.test.sh
   cron/curate-gate.test.sh
@@ -67,9 +68,7 @@ MANIFEST=(
 )
 
 # Repo-native files (they do not come from ~/.claude) the guard also scans.
-# hooks/memory-inject.js is frozen here (decision 2026-11-01): the live copy also runs the private task
-# tool of the Obsidian notes (todo.py), which does not ship. Edit it in this repo by hand; still scanned.
-EXTRA_SCAN=(hooks/memory-inject.js install-memory.py configure-memory.py install-memory.test.py docs/memory-instructions.md docs/codex-support.md
+EXTRA_SCAN=(install-memory.py configure-memory.py install-memory.test.py docs/memory-instructions.md docs/codex-support.md
             skills/memory-write/SKILL.md docs/assets/banner.svg)
 
 mode="${1:---check}"

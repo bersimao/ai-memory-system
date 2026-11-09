@@ -18,6 +18,7 @@ run() {
   R=$(mktemp -d)
   mkdir -p "$R/cron" "$R/scripts"
   cp "$SCRIPT" "$R/cron/memory-index.sh"
+  cp "$(dirname "$SCRIPT")/../scripts/memory_core.py" "$(dirname "$SCRIPT")/../scripts/memory-paths.py" "$R/scripts/"
   printf 'alert() { :; }\nalert_ok() { :; }\n' >"$R/cron/alert.sh"
   cat >"$R/scripts/memory-index.py" <<'EOF'
 import os, sys

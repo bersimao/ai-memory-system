@@ -89,7 +89,7 @@ def index_vectors(memory, collection, embedder=None, batch=64, progress=None):
 
 
 def _allowed(memory, cwd, scope, domain, collection):
-    return {str(p.relative_to(memory.root)): (project, kind) for p, project, kind in memory.documents(cwd, scope, domain, collection)}
+    return {memory.logical(p): (project, kind) for p, project, kind in memory.documents(cwd, scope, domain, collection)}
 
 
 def _vector_rank(memory, query, allowed, collection, depth, embedder):
@@ -119,7 +119,7 @@ def _chunk_hit(memory, db, allowed, source, line, score, own=None, terms=frozens
     the salience labels a lexical hit carries (memory_core.salience_labels)."""
     row = db.execute('SELECT c.end_line, c.content FROM chunks c JOIN docs d ON d.id = c.doc_id WHERE d.source = ? AND c.line = ?',
                      (source, line)).fetchone()
-    text = memory.read_stored(memory.root / source)
+    text = memory.read_stored(memory.locate(source))
     # Never present old indexed text as current evidence.
     if not row or text is None or row[1] not in text.replace('\r\n', '\n').replace('\r', '\n'):
         return None

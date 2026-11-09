@@ -122,7 +122,7 @@ function main() {
   // One nudge per session. Without this, Stop fires every turn and becomes noise.
   const flag = path.join(os.tmpdir(), `claude-daily-log-nudge-${sessionId}`);
 
-  // Same anchor as memory-inject/transcript-capture: the repo, not the cwd.
+  // Same anchor as the snapshot/transcript-capture: the repo, not the cwd.
   let projectDir, anchorDir;
   const { storeDir, demandsFor } = require('./project-store.js');
   try {
