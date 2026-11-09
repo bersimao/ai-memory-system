@@ -2,6 +2,64 @@
 
 Dates are when a change landed on `main`. Commit hashes are from this repo.
 
+## 2026-11-09
+
+Update the same way as in the 2026-09-19 entry below (`git pull origin main`, then
+`./install.sh` with `--dry-run` first).
+
+**Upgrading from an earlier install** — what changed in behavior:
+- The split layout is optional and off by default. Without a `home` in
+  `~/.config/ai-memory/config.json` nothing moves: memory stays under one root, as
+  before. To move it to `~/.ai-memory`, follow [split layout](split-layout.md)
+  (`migration/move-to-ai-memory.py plan`, then `copy`, `switch`, check with
+  `scripts/memory-doctor.py` and a new session, then `retire`; `rollback` undoes it).
+- SessionStart now records the session's project in `<root>/registry/remotes/`
+  (git remote + folder name -> store), in the background, first writer wins. On
+  another PC the same repo then resolves to the same store even with another
+  username or folder layout. To backfill stores made before this:
+  `python3 migration/register-remotes.py --dry-run [--root DIR ...]`, then without
+  `--dry-run`.
+- When this project's store is empty but a store for a folder with the same name has
+  content, the startup snapshot lists it and asks the agent to confirm with you
+  before proposing `project-store.js --bind`. It never binds by itself.
+- `hooks/memory-inject.js` is gone from the repo. Re-running `./install.sh` drops
+  its hook entry from your settings, as before. It does not delete an installed
+  copy: `rm ~/.claude/hooks/memory-inject.js` if you have one.
+- `settings.example.json` now matches what the installer writes: all four events
+  call `hooks/memory-lifecycle.py`. If you wired hooks by hand from the old example
+  (`transcript-capture.js`, `capture-maintenance.js` called directly), replace
+  them; the installer only rewrites the entries it owns.
+- The demands list (from `data/demands.json`, optional `demand_status_command`) and
+  the renamed-folder notice moved into the startup snapshot.
+- Lexical recall caches page tokens in `state/cache/search-tokens.json` (rebuilt
+  when a page changes; safe to delete).
+
+**Added**
+- `docs/split-layout.md`, `scripts/memory-paths.py` (the layout for shell scripts:
+  `export` lines by default, `--json`), `scripts/memory-layout.test.py`. (`a1b5ebd`)
+- `migration/move-to-ai-memory.py` (phased move with rollback) and
+  `migration/register-remotes.py` (registry backfill, `--root DIR` repeatable).
+  (`a1b5ebd`, `ecdf542`)
+- `project-store.js --register [dir]` and `--bind <store> --for <dir>`
+  (per-machine binding in `store-bindings.json`: `~/.config/ai-memory/` with the
+  split layout, `<root>/data/` without it). (`a1b5ebd`)
+
+**Changed**
+- `scripts/memory_core.py` `layout()` is the single authority for paths;
+  `hooks/project-store.js` mirrors it. (`a1b5ebd`)
+- Prompt recall is faster: the hook went from about 4.5 s to 1.6 s on an 8 MB
+  corpus, with identical results on 12 real queries. (`3ec7b01`)
+- README banner: the retrieval ladder reads `lexical` and `semantic*` (semantic
+  search is optional and not installed by default); test badge back to 20 suites.
+
+**Removed**
+- `hooks/memory-inject.js` and `hooks/memory-inject.test.js`. (`c781359`)
+
+**Fixed**
+- `cron/jsonl-to-transcript.py` read the store from the human `store:` line, which
+  now ends with ` (path)`, and created duplicate `<store> (path)` stores. It reads
+  the resolver's JSON now. (`ed4a843`)
+
 ## 2026-11-08
 
 Update the same way as in the 2026-09-19 entry below (`git pull origin main`, then
