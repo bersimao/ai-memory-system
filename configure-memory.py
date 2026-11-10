@@ -9,10 +9,11 @@ import shlex
 import shutil
 import tempfile
 
-OWNED = ('memory-inject.js', 'daily-log-nudge.js', 'memory-lifecycle.py')
+OWNED = ('memory-inject.js', 'daily-log-nudge.js', 'memory-lifecycle.py', 'memory-read.py')
 
 
-def merge(target, command, events):
+def merge(target, entries):
+    """entries: [(event, command, matcher or None)]. Owned handlers are dropped first, then re-added."""
     data = json.loads(target.read_text()) if target.exists() else {}
     if not isinstance(data, dict) or not isinstance(data.get('hooks', {}), dict):
         raise ValueError('invalid hook configuration')
@@ -25,8 +26,9 @@ def merge(target, command, events):
             if handlers:
                 kept.append({**group, 'hooks': handlers})
         groups[event] = kept
-    for event in events:
-        groups.setdefault(event, []).append({'hooks': [{'type': 'command', 'command': command, 'timeout': 10}]})
+    for event, command, matcher in entries:
+        groups.setdefault(event, []).append({**({'matcher': matcher} if matcher else {}),
+                                             'hooks': [{'type': 'command', 'command': command, 'timeout': 10}]})
     if before == json.dumps(data, sort_keys=True):
         return False
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -50,10 +52,13 @@ if __name__ == '__main__':
     args = parser.parse_args()
     root = Path(args.root).resolve()
     command = 'env AI_MEMORY_HOME=' + shlex.quote(str(root)) + ' python3 ' + shlex.quote(str(root / 'hooks/memory-lifecycle.py'))
-    events = ['SessionStart', 'UserPromptSubmit', 'Stop', 'PreCompact']
-    merge(root / 'settings.json', command, events)
+    lifecycle = [(event, command, None) for event in ('SessionStart', 'UserPromptSubmit', 'Stop', 'PreCompact')]
+    # Logs which memory pages the agent opens with its Read tool, so salience counts real reading.
+    # Claude Code only: the hook reads that tool's `file_path` input.
+    read = 'env AI_MEMORY_HOME=' + shlex.quote(str(root)) + ' python3 ' + shlex.quote(str(root / 'hooks/memory-read.py'))
+    merge(root / 'settings.json', lifecycle + [('PostToolUse', read, 'Read')])
     if args.codex_home:
-        merge(Path(args.codex_home) / 'hooks.json', command, events)
+        merge(Path(args.codex_home) / 'hooks.json', lifecycle)
     cfg = root / 'data/memory-system/config.json'
     current = json.loads(cfg.read_text()) if cfg.exists() else {}
     current['automatic_recall_scope'] = args.scope

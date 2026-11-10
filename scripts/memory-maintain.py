@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 
-from memory_core import Memory, VERSION, digest, json_read, json_write, now, read, redact
+from memory_core import Memory, VERSION, digest, fingerprint, json_read, json_write, now, quote_supported, read, redact, units
 
 
 SUMMARY_SCHEMA = {'type': 'object', 'properties': {'summary': {'type': 'string'}},
@@ -116,9 +116,93 @@ def alert_archived(paths):
         return
     message = ('index archived whole - MEMORY.md now holds only archive links; rebuild it as ## sections '
                'with hub links, or raise .cap\n' + '\n'.join('  ' + p for p in paths))
+    _alert('alert', 'INDEX-ARCHIVE ALERT', message)
+
+
+def _alert(kind, marker, message):
     # $0 must not be alert.sh itself: it runs as a CLI when $0 equals its own path.
-    subprocess.run(['bash', '-c', '. "$1" && alert "$2" "$3"', 'memory-maintain', str(Path(__file__).resolve().parent.parent / 'cron/alert.sh'),
-                    'INDEX-ARCHIVE ALERT', message], check=False)
+    return subprocess.run(['bash', '-c', '. "$1" && "$2" "$3" "$4"', 'memory-maintain',
+                           str(Path(__file__).resolve().parent.parent / 'cron/alert.sh'), kind, marker, message],
+                          check=False).returncode == 0
+
+
+FLAGS_SCHEMA = {'type': 'object', 'required': ['flags'], 'additionalProperties': False,
+                'properties': {'flags': {'type': 'array', 'items': {
+                    'type': 'object', 'required': ['line', 'skill', 'why'], 'additionalProperties': False,
+                    'properties': {'line': {'type': 'string'}, 'skill': {'type': 'string'}, 'why': {'type': 'string'}}}}}}
+FLAG_PROMPT = ('Return {"flags":[{"line":"...","skill":"...","why":"..."}]}. The evidence is a global memory index. Below '
+               'is the list of skills that own domain knowledge. Flag a list item of the index only when its fact clearly '
+               'belongs to ONE of those skills (it is about that tool, API, language or product, not about how the user '
+               'works in general). line: the first 80 characters of that item, copied word for word. skill: a name from '
+               'the list, exactly. why: one short sentence. Never flag headings, the generated skill list between the '
+               '`skills:auto` markers, or an item that only points to other pages. When in doubt, do not flag: an empty '
+               'list is the normal answer.\nSkills:\n')
+FLAG_MARKER = 'GLOBAL-INDEX SKILL FLAG'
+
+
+def skill_owners(memory):
+    """{name: description} of the skills that own knowledge (a knowledge/ or references/ dir)."""
+    owners = {}
+    for d in sorted((memory.sources / 'skills').glob('*/')):
+        if (d / 'knowledge').is_dir() or (d / 'references').is_dir():
+            found = re.search(r'^description:\s*(.+)$', read(d / 'SKILL.md') or '', re.M)
+            owners[d.name] = found.group(1).strip()[:300] if found else ''
+    return owners
+
+
+def flag_skill_lines(memory):
+    """Nightly, report only: lines of the global index that look owned by a skill. Nothing moves: the
+    writer cannot write into skills, and a team-synced skill needs its own review route, so a person
+    decides (user, 2026-11-10). One model call, only when the index changed. The list goes to
+    state/skill-flags.json and the shared alert channel (cron/alert.sh); a line the user
+    keeps is dismissed (`memory-maintain.py flags --dismiss FRAGMENT`) and never flagged again."""
+    source = memory.read_stored(memory.root / 'context/MEMORY.md')
+    owners = skill_owners(memory)
+    receipt = memory.state / 'extracted' / (digest('skill-flag') + '.json')
+    if not source or not owners or json_read(receipt, {}).get('sha256') == digest(source):
+        return None
+    out = memory.state / 'skill-flags.json'
+    dismissed = json_read(out, {}).get('dismissed', [])
+    obj = generate(memory, source, FLAG_PROMPT + '\n'.join('- ' + n + ': ' + d for n, d in owners.items()), schema=FLAGS_SCHEMA)
+    flags, blocks = [], [u[2] for u in units(source) if u[1] == 'block']
+    for f in obj.get('flags') if isinstance(obj.get('flags'), list) else []:
+        # Same standard as distilled facts: an unknown skill or a line not in the file is dropped.
+        if not isinstance(f, dict) or f.get('skill') not in owners or not isinstance(f.get('line'), str):
+            continue
+        # Identity is the index block the quote sits in, not the quote: the model cuts or trims the
+        # same line differently between runs, and a dismissal keyed on its wording came back.
+        block = next((b for b in blocks if quote_supported(f['line'], b)), None)
+        if block is None or fingerprint(block) in dismissed or any(x['block'] == fingerprint(block) for x in flags):
+            continue
+        flags.append({'line': f['line'].strip(), 'skill': f['skill'], 'why': str(f.get('why', ''))[:200],
+                      'block': fingerprint(block)})
+    json_write(out, {'at': now(), 'sha256': digest(source), 'flags': flags, 'dismissed': dismissed})
+    if flags:
+        told = _alert('alert', FLAG_MARKER, str(len(flags)) + ' line(s) of the global MEMORY.md look owned by a skill; move them by '
+               'the skill route, or keep one with: memory-maintain.py flags --dismiss "<fragment>"\n' +
+               '\n'.join('  ' + f['skill'] + ' <- ' + f['line'][:80] + ' (' + f['why'] + ')' for f in flags))
+    else:
+        told = _alert('alert_ok', FLAG_MARKER, 'no line of the global index looks owned by a skill')
+    # Receipt only once the alert landed: written before it, a failed alert was never retried and
+    # the flags stayed unseen until the index changed again (Codex review, 2026-11-10).
+    if told:
+        json_write(receipt, {'sha256': digest(source), 'at': now()})
+    return flags
+
+
+def dismiss_flag(memory, fragment):
+    """Keep a flagged line where it is: it leaves the open list and is not flagged again."""
+    out = memory.state / 'skill-flags.json'
+    state = json_read(out, {})
+    found = [f for f in state.get('flags', []) if fragment in f['line']]
+    if len(found) != 1:
+        raise ValueError(('no' if not found else str(len(found))) + ' open flag(s) contain ' + repr(fragment))
+    state['flags'].remove(found[0])
+    state['dismissed'] = state.get('dismissed', []) + [found[0]['block']]
+    json_write(out, state)
+    if not state['flags']:
+        _alert('alert_ok', FLAG_MARKER, 'every flagged line was moved or dismissed')
+    return found[0]
 
 
 SUMMARY_PROMPT = ('Return {"summary":"..."}. The summary value is Markdown text, not JSON: **Goal**, **Deliverables**, '
@@ -142,6 +226,34 @@ FACTS_PROMPT = ('Return {"facts":[{"text":"...","quote":"..."}]}. Extract only k
 QUOTA = re.compile(r'cc_cli_limit_message|spend limit|usage limit|limit.{0,80}(resets|will reset|reset at)', re.I | re.S)
 
 
+def forget_old_seen(memory, days=14):
+    """Per-session recall-seen lists (hooks/memory-lifecycle.py) of sessions idle for `days`."""
+    cutoff, removed = dt.datetime.now().timestamp() - days * 86400, 0
+    for path in (memory.state / 'recall-seen').glob('*.json'):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except FileNotFoundError:
+            continue
+    return {'removed': removed}
+
+
+def retention(memory):
+    """Bounded state: nothing pruned it until 2026-11-10 (journal 414 MB, usage 14,970 files). Each step
+    on its own, reported on stderr: a failed prune must never cost the curation run."""
+    steps = (('journal', lambda: memory.prune_journal(int(memory.config.get('journal_retention_days', 90)))),
+             ('usage', lambda: memory.pack_usage(int(memory.config.get('usage_loose_days', 14)))),
+             ('recall-seen', lambda: forget_old_seen(memory)))
+    for name, step in steps:
+        try:
+            result = step()
+            if any(result.values()):
+                print(json.dumps({'retention': name, **result}))
+        except Exception as exc:
+            print('retention ' + name + ' failed: ' + str(exc), file=sys.stderr)
+
+
 def maintain(memory, mode, limit=40):
     if mode == 'curate':
         archived, failures = [], []
@@ -162,8 +274,23 @@ def maintain(memory, mode, limit=40):
                 print(json.dumps(result))
             if result.get('archived'):
                 archived.append(relative)
+        # The global index too, for the one case the writer cannot stop: a file put over its cap by a
+        # direct edit (a script or a person writing outside the journal). Under the cap this does nothing.
+        # Its sections move to context/topics/ hubs; it has no salience (not a project index).
+        relative = 'context/MEMORY.md'
+        try:
+            result = split(memory, relative)
+        except Exception as exc:
+            print('failed ' + relative + ': ' + str(exc), file=sys.stderr)
+            failures.append(relative)
+        else:
+            if result['changed']:
+                print(json.dumps(result))
+            if result.get('archived'):
+                archived.append(relative)
         alert_archived(archived)
-        print('Curation moves sections and archives verbatim; nothing is deleted or rewritten.')
+        retention(memory)
+        print('Curation moves sections and archives verbatim; no memory page is deleted or rewritten.')
         return failures
     today = dt.date.today()
     horizon = dt.datetime.now().timestamp() - 35 * 86400
@@ -261,13 +388,27 @@ def maintain(memory, mode, limit=40):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['distill', 'backfill', 'curate'])
+    parser.add_argument('mode', choices=['distill', 'backfill', 'curate', 'flags'])
+    parser.add_argument('--dismiss', metavar='FRAGMENT', help='flags: keep the one flagged line holding FRAGMENT')
     parser.add_argument('--root')
     parser.add_argument('--limit', type=int, default=40)
     args = parser.parse_args()
     memory = Memory(args.root)
+    if args.mode == 'flags':
+        try:
+            print(json.dumps(dismiss_flag(memory, args.dismiss) if args.dismiss else
+                             json_read(memory.state / 'skill-flags.json', {}).get('flags', []), ensure_ascii=False, indent=2))
+        except ValueError as exc:
+            print('memory maintenance: ' + str(exc), file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
     try:
         failures = maintain(memory, args.mode, args.limit)
+        if args.mode == 'distill':
+            try:  # a report: it never costs the distill run its status
+                flag_skill_lines(memory)
+            except Exception as exc:
+                print('skill flag check failed: ' + str(exc), file=sys.stderr)
         if failures:
             # Every other source was processed; still fail so distill.sh alerts.
             print('memory maintenance finished with ' + str(len(failures)) + ' failed source(s)', file=sys.stderr)

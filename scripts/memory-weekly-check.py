@@ -172,7 +172,7 @@ def main():
         before = summarize(old_rows, floor, known) if old_rows else None
         drop = recall_drop(rows, old_rows) if old_rows else None
 
-    events = [json_read(p) for p in (memory.state / 'usage').glob('*.json')]
+    events = memory.usage()  # loose files plus the packed archives (pack_usage)
     since = (now - timedelta(days=7)).astimezone(timezone.utc).isoformat()
     stats = recall_stats(events, since)
     recalls = recall_rows(events, since)

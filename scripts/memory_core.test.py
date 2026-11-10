@@ -64,7 +64,8 @@ class Tests(unittest.TestCase):
     def test_append_journals_exact_original(self):
         before = read(self.memory.path(self.rel))
         result = self.apply(self.memory.change(self.rel, before + 'New fact.\n'))
-        record = json_read(self.memory.state / 'journal' / (result['transaction'] + '.json'))
+        self.assertFalse((self.memory.state / 'journal' / (result['transaction'] + '.json')).exists(), 'committed: moved')
+        record = json_read(next((self.memory.state / 'journal/done').glob('*/' + result['transaction'] + '.json')))
         self.assertEqual(record['changes'][0]['before'], before)
         self.assertEqual(record['status'], 'committed')
         self.assertEqual(read(self.memory.path(self.rel)), before + 'New fact.\n')
@@ -82,7 +83,7 @@ class Tests(unittest.TestCase):
     def test_reviewed_replacement_keeps_old_revision(self):
         before = read(self.memory.path(self.rel))
         result = self.apply(self.memory.change(self.rel, 'A corrected fact.\n', 'replace'), True)
-        self.assertEqual(json_read(self.memory.state / 'journal' / (result['transaction'] + '.json'))['changes'][0]['before'], before)
+        self.assertEqual(json_read(next((self.memory.state / 'journal/done').glob('*/' + result['transaction'] + '.json')))['changes'][0]['before'], before)
 
     def test_stale_proposal_preserves_concurrent_edit(self):
         change = self.memory.change(self.rel, read(self.memory.path(self.rel)) + 'proposal')
@@ -150,7 +151,99 @@ class Tests(unittest.TestCase):
         with self.memory.lock():
             self.memory._recover()
         self.assertEqual(read(self.memory.path(self.rel)), old + 'new')
-        self.assertEqual(json_read(journal)['status'], 'committed')
+        self.assertFalse(journal.exists())
+        done, = (self.memory.state / 'journal/done').glob('*/t.json')  # no created_at: this month
+        self.assertEqual(json_read(done)['status'], 'committed')
+        self.assertEqual(done.parent.name, memory_core.now()[:7])
+
+    def test_recovery_moves_a_committed_record_a_crash_left_at_the_top(self):
+        json_write(self.memory.state / 'journal/c.json', {'id': 'c', 'status': 'committed', 'created_at': '2026-03-04T00:00:00+00:00', 'changes': []})
+        self.apply(self.memory.change(self.rel, read(self.memory.path(self.rel)) + 'x\n'))  # apply runs recovery first
+        self.assertEqual(list((self.memory.state / 'journal').glob('*.json')), [])
+        self.assertTrue((self.memory.state / 'journal/done/2026-03/c.json').is_file())
+
+    def test_journal_retention_drops_old_done_months_only(self):
+        import datetime as dt
+        at = dt.datetime(2026, 11, 10, tzinfo=dt.timezone.utc)
+        for month in ('2026-07', '2026-08', '2026-09'):
+            json_write(self.memory.state / 'journal/done' / month / 'x.json', {'status': 'committed'})
+        json_write(self.memory.state / 'journal/p.json', {'status': 'prepared', 'changes': []})
+        json_write(self.memory.state / 'journal/old.json', {'status': 'prepared', 'created_at': '2020-01-01T00:00:00+00:00', 'changes': []})
+        # 2026-07 ended 2026-08-01, 101 days before; 2026-08 ended 2026-09-01, 70 days before.
+        self.assertEqual(self.memory.prune_journal(at=at)['removed'], ['2026-07'])
+        self.assertEqual(sorted(p.name for p in (self.memory.state / 'journal/done').iterdir()), ['2026-08', '2026-09'])
+        self.assertTrue((self.memory.state / 'journal/p.json').is_file())
+        self.assertTrue((self.memory.state / 'journal/old.json').is_file(), 'a prepared record is never retention\'s')
+
+    def usage_events(self, at):
+        old = [{'event': 'search', 'request_id': 'r%d' % i, 'session': 's', 'at': '2026-09-0%dT00:00:00+00:00' % i, 'hits': []} for i in (1, 2)]
+        old += [{'event': 'open', 'request_id': 'r1', 'result_id': 'h', 'session': 's', 'at': '2026-10-01T00:00:00.000001+00:00'},
+                {'event': 'rag_edit', 'file_path': '/x', 'refs': [], 'session': 's', 'at': '2026-10-02T00:00:00+00:00'},
+                {'event': 'read', 'source': 'context/MEMORY.md', 'session': 's', 'at': '2026-10-02T00:00:00+00:00'}]
+        new = [{'event': 'recall', 'request_id': 'n', 'session': 's', 'at': (at - __import__('datetime').timedelta(days=3)).isoformat(), 'hits': []}]
+        for e in old + new:
+            json_write(self.memory.state / 'usage' / (digest(json.dumps(e))[:32] + '.json'), e)
+        return old, new
+
+    def canon(self, events):
+        return sorted(json.dumps(e, sort_keys=True) for e in events)
+
+    def test_pack_usage_keeps_the_event_set_and_leaves_recent_events_loose(self):
+        import datetime as dt
+        at = dt.datetime(2026, 11, 10, tzinfo=dt.timezone.utc)
+        old, new = self.usage_events(at)
+        before = self.canon(self.memory.usage())
+        result = self.memory.pack_usage(at=at)
+        self.assertEqual((result['packed'], result['months']), (5, ['2026-09', '2026-10']))
+        self.assertEqual(self.canon(self.memory.usage()), before)
+        loose = [json_read(p) for p in (self.memory.state / 'usage').glob('*.json')]
+        self.assertEqual(loose, new)
+        self.assertEqual(len(read(self.memory.state / 'usage/archive-2026-10.jsonl').splitlines()), 3)
+        self.assertEqual(self.memory.pack_usage(at=at)['packed'], 0)
+
+    def test_crash_after_archive_write_never_double_counts(self):
+        import datetime as dt
+        at = dt.datetime(2026, 11, 10, tzinfo=dt.timezone.utc)
+        self.usage_events(at)
+        before = self.canon(self.memory.usage())
+        real = Path.unlink
+        with patch.object(Path, 'unlink', lambda self, *a, **k: None):  # crash: archive written, loose files kept
+            self.memory.pack_usage(at=at)
+        self.assertEqual(len(list((self.memory.state / 'usage').glob('*.json'))), 6)
+        self.assertEqual(self.canon(self.memory.usage()), before)
+        self.memory.pack_usage(at=at)  # the next run finishes the job without growing the archive
+        self.assertEqual(len(read(self.memory.state / 'usage/archive-2026-09.jsonl').splitlines()), 2)
+        self.assertEqual(self.canon(self.memory.usage()), before)
+        self.assertEqual(len(list((self.memory.state / 'usage').glob('*.json'))), 1)
+
+    def test_curate_splits_an_over_cap_global_index_without_losing_a_line(self):
+        rel = 'context/MEMORY.md'
+        body = '# Global\n\n## Small\n- keep me\n\n## Big env\n' + ''.join('- fact %d %s\n' % (i, 'e' * 60) for i in range(70))
+        atomic(self.memory.path(rel), body)  # by hand: apply() would refuse it over the cap
+        self.assertGreater(len(body), self.memory.cap(rel))
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(maintain.maintain(self.memory, 'curate'), [])
+        index = read(self.memory.path(rel))
+        self.assertLessEqual(len(index), self.memory.cap(rel))
+        self.assertIn('## Big env\n- [Big env](topics/big-env.md)', index)
+        after = [l for p in (self.root / 'context').rglob('*.md') for l in read(p).splitlines() if l.strip()]
+        for line in body.splitlines():
+            if line.strip():
+                self.assertIn(line, after)
+
+    def test_curate_runs_each_retention_step_even_when_one_fails(self):
+        old, new = self.memory.state / 'recall-seen/old.json', self.memory.state / 'recall-seen/new.json'
+        for path in (old, new):
+            json_write(path, ['a:b'])
+        os.utime(old, (0, __import__('time').time() - 15 * 86400))
+        loose = self.memory.state / 'usage/x.json'
+        json_write(loose, {'event': 'search', 'request_id': 'r', 'at': '2020-01-01T00:00:00+00:00', 'hits': []})
+        err = io.StringIO()
+        with patch.object(Memory, 'prune_journal', lambda *a, **k: 1 / 0), patch.object(sys, 'stderr', err), redirect_stdout(io.StringIO()):
+            maintain.maintain(self.memory, 'curate')
+        self.assertIn('retention journal failed', err.getvalue())
+        self.assertEqual((old.exists(), new.exists(), loose.exists()), (False, True, False))
+        self.assertTrue((self.memory.state / 'usage/archive-2020-01.jsonl').is_file())
 
     def test_recovery_does_not_clobber_external_edit(self):
         change = self.memory.change(self.rel, read(self.memory.path(self.rel)) + 'new')
@@ -282,6 +375,42 @@ class Tests(unittest.TestCase):
         self.assertIn('[INDEX-ARCHIVE ALERT] [!]', log.read_text())
         self.assertIn(self.rel, log.read_text())
 
+    def test_skill_flags_report_only_validated_lines_once_per_revision(self):
+        log = Path(self.tmp.name) / 'alerts.log'
+        (self.root / 'skills/wsl/references').mkdir(parents=True)
+        (self.root / 'skills/wsl/SKILL.md').write_text('---\nname: wsl\ndescription: WSL interop gotchas\n---\n')
+        (self.root / 'skills/plain').mkdir(parents=True)  # owns no knowledge: not a target
+        index = '# Global\n- drvfs mounts lose the exec bit after a Windows update\n- the user prefers short answers\n'
+        atomic(self.memory.path('context/MEMORY.md'), index)
+        reply = {'flags': [{'line': 'drvfs mounts lose the exec bit after a Windows update', 'skill': 'wsl', 'why': 'interop'},
+                           {'line': 'the user prefers short answers', 'skill': 'plain', 'why': 'unknown owner'},
+                           {'line': 'a line the model made up entirely', 'skill': 'wsl', 'why': 'not in the file'}]}
+        with patch.dict(os.environ, {'CLAUDE_ALERT_LOG': str(log)}), patch.object(maintain, 'generate', return_value=reply) as gen:
+            flags = maintain.flag_skill_lines(self.memory)
+            self.assertEqual([f['skill'] for f in flags], ['wsl'])
+            self.assertIn('[GLOBAL-INDEX SKILL FLAG] [!]', log.read_text())
+            self.assertIsNone(maintain.flag_skill_lines(self.memory))  # unchanged index: no second model call
+            self.assertEqual(gen.call_count, 1)
+            self.assertEqual(read(self.memory.path('context/MEMORY.md')), index)  # report only
+            maintain.dismiss_flag(self.memory, 'drvfs mounts')
+            self.assertIn('[GLOBAL-INDEX SKILL FLAG] [OK]', log.read_text())
+            atomic(self.memory.path('context/MEMORY.md'), index + '- one more line\n')
+            gen.return_value = {'flags': [{'line': 'mounts lose the exec bit after a Windows', 'skill': 'wsl', 'why': 'cut elsewhere'}]}
+            self.assertEqual(maintain.flag_skill_lines(self.memory), [])  # dismissed, however the model quotes it
+
+    def test_skill_flag_whose_alert_failed_is_retried(self):
+        (self.root / 'skills/wsl/references').mkdir(parents=True)
+        atomic(self.memory.path('context/MEMORY.md'), '# Global\n- drvfs mounts lose the exec bit after an update\n')
+        reply = {'flags': [{'line': 'drvfs mounts lose the exec bit after an update', 'skill': 'wsl', 'why': 'interop'}]}
+        with patch.object(maintain, 'generate', return_value=reply) as gen:
+            with patch.object(maintain, '_alert', return_value=False):
+                maintain.flag_skill_lines(self.memory)
+            with patch.object(maintain, '_alert', return_value=True) as alert:
+                self.assertEqual(len(maintain.flag_skill_lines(self.memory)), 1)  # not skipped: the alert never landed
+                self.assertEqual(alert.call_count, 1)
+                self.assertIsNone(maintain.flag_skill_lines(self.memory))
+        self.assertEqual(gen.call_count, 2)
+
     def test_facts_overflow_moves_a_section_instead_of_chaining(self):
         source = self.ctx + '/memory/2026-09-12.md'
         atomic(self.memory.path(source), 'The retry bug was fixed using an idempotency key.')
@@ -397,6 +526,14 @@ class Tests(unittest.TestCase):
         self.assertLessEqual(len(result['text'].encode()), 600)
         self.assertEqual(result['manifest']['omitted'][0]['source'], self.rel)
         self.assertNotIn('RAW SECRET', result['text'])
+
+    def test_global_index_left_out_of_the_snapshot_by_config(self):
+        atomic(self.memory.path('context/MEMORY.md'), 'GLOBAL RULE LINE\n')
+        self.assertIn('GLOBAL RULE LINE', self.memory.snapshot(self.cwd)['text'])
+        self.memory.config['snapshot_global_index'] = False
+        result = self.memory.snapshot(self.cwd)
+        self.assertNotIn('GLOBAL RULE LINE', result['text'])
+        self.assertIn('context/MEMORY.md', [e['source'] for e in result['manifest']['omitted']])
 
     def test_clear_start_omits_latest_checkpoint(self):
         # 2026-10-23: a session opened by /clear got the previous topic's checkpoint as noise.
@@ -582,6 +719,8 @@ class Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'changed'):
             self.memory.expand(first['request_id'], hit['id'])
 
+    # Hook tests that ask several prompts use a fresh session per prompt: one session skips a page it
+    # was already shown (recall-seen), which is not what they test.
     def test_prompt_hook_does_not_need_remember_keyword(self):
         self.seed_other()
         self.memory.config['automatic_recall_scope'] = 'all'
@@ -594,7 +733,7 @@ class Tests(unittest.TestCase):
         self.memory.config['automatic_recall_scope'] = 'all'
         prompt = 'Considering idempotency was solved, what next?'
         ask = lambda: re.sub(r'Expand: \w+:', 'Expand: ', hooks.handle(self.memory, {
-            'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': prompt, 'session_id': 's'}))
+            'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': prompt, 'session_id': os.urandom(8).hex()}))
         observer, seen = Path(self.tmp.name) / 'observer.py', Path(self.tmp.name) / 'seen.json'
         with patch.object(hooks, 'OBSERVER', observer):
             baseline = ask()  # no observer file: nothing to load
@@ -618,7 +757,7 @@ class Tests(unittest.TestCase):
         rel = 'projects/other/context/topics/retry.md'
         atomic(self.memory.path(rel), '# Retry\n' + 'filler line\n' * 20 + 'The idempotency key is persisted.\n')
         self.memory.config['automatic_recall_scope'] = 'all'
-        ask = lambda prompt: hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': prompt, 'session_id': 's'})
+        ask = lambda prompt: hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': prompt, 'session_id': os.urandom(8).hex()})
         output = ask('how is idempotency handled')
         self.assertIn(rel + ':22\n', output)
         self.assertNotIn('filler', output)
@@ -635,12 +774,89 @@ class Tests(unittest.TestCase):
         self.assertTrue(all(isinstance(e['elapsed_ms'], int) for e in recalls))
         self.assertEqual(sorted(e['injected_bytes'] == 0 for e in recalls), [False, False, False, False, True, True, True])
 
+    def test_another_part_of_a_page_already_shown_is_still_injected(self):
+        rel = 'projects/other/context/topics/gateway.md'
+        atomic(self.memory.path(rel), '# Gateway\nThe alpha handshake uses nonce rotation.\n' + 'filler line\n' * 60 +
+               'The beta failover drains sockets first.\n')
+        self.memory.config['automatic_recall_scope'] = 'all'
+        ask = lambda prompt: hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd),
+                                                        'prompt': prompt, 'session_id': 's'})
+        self.assertIn('nonce rotation', ask('alpha handshake nonce'))
+        self.assertIn('drains sockets', ask('beta failover sockets'))  # same page, a part never shown
+        self.assertEqual(ask('alpha handshake nonce'), '')
+
+    def test_prompt_hook_never_injects_a_page_twice_in_one_session(self):
+        rel = 'projects/other/context/topics/retry.md'
+        atomic(self.memory.path(rel), '# Retry\nThe idempotency key is persisted.\n')
+        self.memory.config['automatic_recall_scope'] = 'all'
+        ask = lambda prompt, session='s': hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd),
+                                                                    'prompt': prompt, 'session_id': session})
+        recalls = lambda: sorted((e for e in map(json_read, (self.memory.state / 'usage').glob('*.json')) if e['event'] == 'recall'),
+                                 key=lambda e: e['at'])
+        self.assertIn('retry.md', ask('idempotency persisted'))
+        self.assertEqual(ask('idempotency persisted'), '', 'shown already: nothing, not even the absence text')
+        self.assertEqual(ask('remember idempotency persisted'), '', 'a cue does not bring the absence text either')
+        self.assertEqual([(e['repeats'], e['hits'] == []) for e in recalls()], [(0, False), (1, True), (1, True)])
+        self.assertIn('retry.md', ask('idempotency persisted', session='other'), 'another session is unaffected')
+        hooks.handle(self.memory, {'hook_event_name': 'PreCompact', 'cwd': str(self.cwd), 'session_id': 's'})
+        self.assertIn('retry.md', ask('idempotency persisted'), 'compaction dropped it from the context')
+        self.assertEqual(ask('idempotency persisted'), '')
+        atomic(self.memory.path(rel), '# Retry\nThe idempotency key is persisted, now in Redis.\n')
+        self.assertIn('Redis', ask('idempotency persisted'), 'a new revision is new text')
+        hooks.handle(self.memory, {'hook_event_name': 'SessionStart', 'cwd': str(self.cwd), 'session_id': 's', 'source': 'clear'})
+        self.assertIn('retry.md', ask('idempotency persisted'), 'every session start forgets')
+        self.assertIn('retry.md', ask('idempotency persisted', session=None) or '')
+        self.assertIn('retry.md', ask('idempotency persisted', session=None) or '', 'no session id: as before')
+
+    def test_semantic_recall_says_why_it_had_no_answer(self):
+        import socket, threading
+        self.memory.config['recall_semantic_timeout'] = 0.2
+        with patch.object(hooks.subprocess, 'Popen', lambda *a, **k: None):  # never start a real daemon here
+            self.assertEqual(hooks.semantic_recall(self.memory, {}), (None, 'not_running'))
+        path = self.memory.runtime / 'semantic.sock'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(server.close)
+        server.bind(str(path))
+        server.listen(4)
+        self.assertEqual(hooks.semantic_recall(self.memory, {}), (None, 'timeout'))  # accepted, never answered
+        server.accept()[0].close()  # drop that queued connection, or the next accept() would get it
+        for reply, expected in ((b'null\n', (None, 'error')), (b'{"error": "busy"}\n', (None, 'error')), (b'\n', (None, 'error')),
+                                (b'{"results": []}\n', ({'results': []}, None))):
+            def answer():
+                conn, _ = server.accept()
+                with conn:
+                    conn.makefile('rb').readline()
+                    conn.sendall(reply)
+            thread = threading.Thread(target=answer)
+            thread.start()
+            self.assertEqual(hooks.semantic_recall(self.memory, {}), expected, reply)
+            thread.join()
+
+    def test_recall_event_carries_the_vector_miss_reason(self):
+        atomic(self.memory.path('projects/other/context/topics/retry.md'), '# Retry\nThe idempotency key is persisted.\n')
+        self.memory.config.update({'automatic_recall_scope': 'all', 'recall_hybrid': True, 'recall_semantic': True})
+        with patch.object(hooks, 'semantic_recall', lambda memory, request: (None, 'timeout' if request.get('mode') else 'not_running')):
+            output = hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd),
+                                                'prompt': 'remember idempotency persisted', 'session_id': 'm'})
+        self.assertIn('retry.md', output)
+        self.assertIn(', lexical)', output)
+        recall, = [e for e in map(json_read, (self.memory.state / 'usage').glob('*.json')) if e['event'] == 'recall']
+        self.assertEqual((recall['hybrid_miss'], recall['semantic_miss'], recall['hybrid'], recall['semantic']),
+                         ('timeout', 'not_running', None, None))
+        with patch.object(hooks, 'semantic_recall', lambda memory, request: ({'request_id': 'v' * 32, 'results': []}, None)):
+            hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd),
+                                       'prompt': 'remember idempotency persisted', 'session_id': 'n'})
+        latest = max((e for e in map(json_read, (self.memory.state / 'usage').glob('*.json')) if e['event'] == 'recall'), key=lambda e: e['at'])
+        self.assertNotIn('hybrid_miss', latest)
+        self.assertNotIn('semantic_miss', latest)
+
     def test_prompt_hook_skips_task_notices_and_two_plain_words(self):
         # 2026-10-10, logged traffic: harness notices and two-word replies opened the gate on noise.
         atomic(self.memory.path('projects/other/context/topics/deploy.md'),
                'Commit and push before the deploy; ticket 85789 completed, status ok.\n')
         self.memory.config.update({'automatic_recall_scope': 'all', 'recall_min_terms': 2})
-        ask = lambda prompt: hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': prompt, 'session_id': 's'})
+        ask = lambda prompt: hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': prompt, 'session_id': os.urandom(8).hex()})
         self.assertEqual(ask('<task-notification>\n<status>completed</status>'), '')
         # 2026-10-12: a sub-agent's final report reaches the hook in this shape (12 of 12 logged hashes).
         self.assertEqual(ask('<agent-message from="a0aa9403a96a697d0">\n[Subagent hand-back] The text below is the '
@@ -661,7 +877,7 @@ class Tests(unittest.TestCase):
         for rel, words in pages.items():
             atomic(self.memory.path(rel), words + ' notes\n')
         self.memory.config['automatic_recall_scope'] = 'all'
-        ask = lambda prompt: hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': prompt, 'session_id': 's'})
+        ask = lambda prompt: hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': prompt, 'session_id': os.urandom(8).hex()})
         seen = lambda: [rel in ask(words) for rel, words in pages.items()]
         self.assertEqual(seen(), [True, True, True, True])       # off by default
         self.memory.config['recall_cross_auto_min_score'] = 1000
@@ -1694,8 +1910,10 @@ class Salience(unittest.TestCase):
                 '- [Older context](index-0123456789abcdef.md) (2020-01-01) ' + 'i' * 60 + '\n')
         atomic(self.root / self.ctx / 'topics/h.md', 'x\n')
         atomic(self.root / self.ctx / 'index-0123456789abcdef.md', 'x\n')
-        self.index(text, 0, [loose, second])
+        atomic(self.memory.path(self.rel), text)
+        atomic(self.root / self.ctx / '.cap', '5000')  # the marker is written into the file: pin needs room
         self.memory.pin(self.rel, 'pinned old')
+        self.index(read(self.memory.path(self.rel)), 0, [loose, second])
         result = self.memory.rebalance(self.rel, reserve=0)
         self.assertEqual(sorted(d[1] for d in result['demoted']), [loose.strip(), second.strip()])
         warm = read(self.memory.path(self.rel))
@@ -1858,6 +2076,194 @@ class Salience(unittest.TestCase):
         self.assertTrue(hits[self.rel]['own'])
         other = hits['projects/other/context/MEMORY.md']
         self.assertEqual((other['own'], other['blocks']), (False, [memory_core.fingerprint(self.OLD)]))
+
+    def edit(self, old, new):
+        text = read(self.memory.path(self.rel))
+        self.assertIn(old, text)
+        atomic(self.memory.path(self.rel), text.replace(old, new))
+
+    def tight(self):
+        """Cap one char under the index: exactly one movable block must leave."""
+        atomic(self.root / self.ctx / '.cap', str(len(read(self.memory.path(self.rel))) - 1))
+
+    def roomy(self):
+        atomic(self.root / self.ctx / '.cap', '5000')
+
+    def demoted(self, **kw):
+        return [d[1] for d in self.memory.rebalance(self.rel, reserve=0, **kw)['demoted']]
+
+    def entry(self, block):
+        return json_read(self.memory.state / 'salience.json')[self.ctx]['blocks'].get(memory_core.fingerprint(block))
+
+    def test_pin_is_an_inline_marker_that_survives_an_edit_and_unpin_restores_the_bytes(self):
+        atomic(self.memory.path(self.rel), self.TOP + self.OLD + self.NEW)
+        self.roomy()
+        original = read(self.memory.path(self.rel))
+        self.memory.pin(self.rel, 'old fact')
+        self.assertIn(self.OLD.rstrip('\n') + ' <!-- pin -->\n', read(self.memory.path(self.rel)))
+        self.assertNotIn('pinned', json.dumps(json_read(self.memory.state / 'salience.json')), 'state holds no pin')
+        self.memory.pin(self.rel, 'old fact', False)
+        self.assertEqual(read(self.memory.path(self.rel)), original)
+        self.tight()
+        self.assertEqual(self.demoted(dry_run=True), [self.OLD.strip()[:90]], 'unpinned, the old line is the weaker')
+        self.roomy()
+        self.memory.pin(self.rel, 'old fact')
+        self.edit('old fact about', 'old fact on')  # one-word edit: a new hash, still pinned
+        self.tight()
+        self.assertEqual(self.demoted(), [self.NEW.strip()[:90]])
+
+    def test_unpin_removes_a_marker_left_on_a_later_line(self):
+        atomic(self.memory.path(self.rel), '# W\n- overview\n- rule line one\n  continued <!-- pin -->\n')
+        self.memory.pin(self.rel, 'rule line one', pinned=False)
+        self.assertEqual(read(self.memory.path(self.rel)), '# W\n- overview\n- rule line one\n  continued\n')
+
+    def test_a_pin_kept_only_in_state_follows_a_light_edit(self):
+        atomic(self.memory.path(self.rel), '# W\n- overview\n- important rule about the gateway timeout\n')
+        self.memory.rebalance(self.rel, events=[])
+        state = json_read(self.memory.state / 'salience.json')
+        fp = memory_core.fingerprint('- important rule about the gateway timeout\n')
+        state[self.ctx]['blocks'][fp]['pinned'] = True  # as written before the inline marker existed
+        json_write(self.memory.state / 'salience.json', state)
+        atomic(self.memory.path(self.rel), '# W\n- overview\n- important rule about the gateway timeouts\n')
+        self.memory.rebalance(self.rel, events=[])
+        blocks = json_read(self.memory.state / 'salience.json')[self.ctx]['blocks']
+        self.assertEqual([e.get('pinned') for e in blocks.values() if 'gateway' in e.get('text', '')], [True])
+
+    def test_pin_never_overwrites_an_edit_made_while_it_ran(self):
+        atomic(self.memory.path(self.rel), '# W\n- overview\n- keep this rule\n')
+        real, edited = self.memory.cap, '# W\n- overview\n- keep this rule\n- written by another session\n'
+        def cap(relative):  # runs between pin()'s read and its write
+            atomic(self.memory.path(self.rel), edited)
+            return real(relative)
+        with patch.object(self.memory, 'cap', cap):
+            with self.assertRaisesRegex(ValueError, 'revision conflict'):
+                self.memory.pin(self.rel, 'keep this rule')
+        self.assertEqual(read(self.memory.path(self.rel)), edited)
+
+    def test_pin_refuses_when_the_marker_does_not_fit_the_cap(self):
+        atomic(self.memory.path(self.rel), self.TOP + self.OLD)
+        atomic(self.root / self.ctx / '.cap', str(len(self.TOP + self.OLD) + 5))
+        with self.assertRaisesRegex(ValueError, 'no room for the pin marker'):
+            self.memory.pin(self.rel, 'old fact')
+        self.assertEqual(read(self.memory.path(self.rel)), self.TOP + self.OLD)
+
+    def edited_after_use(self, new_text):
+        """OLD used once, its text stored by a real run, then edited to `new_text` under a tight cap."""
+        atomic(self.memory.path(self.rel), self.TOP + self.OLD + self.NEW)
+        self.roomy()
+        self.use(self.OLD)  # logged against the pre-edit hash
+        self.memory.rebalance(self.rel, reserve=0)  # nothing moves; stores the 200-char texts
+        self.edit(self.OLD, new_text)
+        self.tight()
+
+    def test_use_logged_before_a_one_word_edit_still_counts(self):
+        edited = self.OLD.replace('about', 'on')
+        self.edited_after_use(edited)
+        self.assertEqual(self.demoted(), [self.NEW.strip()[:90]], 'the old use still lifts the edited line')
+        entry = self.entry(edited)
+        self.assertEqual((entry['aliases'], entry['first_seen']), ([memory_core.fingerprint(self.OLD)], '2026-01-01'))
+
+    def test_rewritten_line_starts_fresh(self):
+        rewritten = '- entirely different words now (2026-01-01) ' + 'z' * 76 + '\n'
+        self.assertLess(memory_core.similarity(memory_core.block_text(self.OLD), memory_core.block_text(rewritten)), 0.8)
+        self.edited_after_use(rewritten)
+        # No heir: born today with no uses, it ties NEW and the later line keeps its place.
+        self.assertEqual(self.demoted(), [rewritten.strip()[:90]])
+        self.assertNotIn('aliases', self.entry(rewritten))
+        self.assertEqual(self.entry(rewritten)['first_seen'], __import__('datetime').date.today().isoformat())
+
+    def test_one_old_entry_has_one_heir(self):
+        twin = self.OLD.replace('alpha', 'alpho')
+        self.edited_after_use(self.OLD.replace('about', 'on') + twin)  # two lookalikes appear, one inherits
+        state = json_read(self.memory.state / 'salience.json')[self.ctx]['blocks']
+        self.memory.rebalance(self.rel, reserve=0, dry_run=True)
+        self.memory.rebalance(self.rel, reserve=0)
+        heirs = [fp for fp, e in json_read(self.memory.state / 'salience.json')[self.ctx]['blocks'].items() if e.get('aliases')]
+        self.assertEqual(len(heirs), 1)
+        self.assertIn(memory_core.fingerprint(self.OLD), state)
+
+    def test_legacy_state_pin_still_protects_and_unpin_clears_it(self):
+        atomic(self.memory.path(self.rel), self.TOP + self.OLD + self.NEW)
+        self.tight()
+        fp = memory_core.fingerprint(self.OLD)
+        json_write(self.memory.state / 'salience.json', {self.ctx: {'since': '2026-01-01', 'blocks': {fp: {'pinned': True}}}})
+        self.assertEqual(self.demoted(dry_run=True), [self.NEW.strip()[:90]])
+        before = read(self.memory.path(self.rel))
+        self.memory.pin(self.rel, 'old fact', False)
+        self.assertEqual(read(self.memory.path(self.rel)), before, 'no marker to remove: the file is untouched')
+        self.assertNotIn('pinned', self.entry(self.OLD))
+        self.assertEqual(self.demoted(dry_run=True), [self.OLD.strip()[:90]])
+
+    def test_pinning_keeps_the_blocks_use_history(self):
+        y, x = '- line y (2026-01-01) ' + 'y' * 100 + '\n', '- line x (2026-01-01) ' + 'x' * 100 + '\n'
+        atomic(self.memory.path(self.rel), self.TOP + y + x)
+        self.roomy()
+        self.use(y)
+        self.memory.pin(self.rel, 'line y')
+        pinned = y.rstrip('\n') + ' <!-- pin -->\n'
+        self.assertEqual(self.entry(pinned)['aliases'], [memory_core.fingerprint(y)])
+        self.edit('line y', 'line y2')  # edited while pinned: rebalance hands the history on
+        self.memory.rebalance(self.rel, reserve=0)
+        self.memory.pin(self.rel, 'line y2', False)
+        final = y.replace('line y', 'line y2')
+        self.assertEqual(read(self.memory.path(self.rel)), self.TOP + final + x)
+        self.assertEqual(self.entry(final)['aliases'], [memory_core.fingerprint(h) for h in (y, pinned, pinned.replace('line y', 'line y2'))])
+        self.tight()
+        self.assertEqual(self.demoted(dry_run=True), [x.strip()[:90]], "y's use survived pin, edit and unpin")
+
+    def read_hook(self, payload, raw=None):
+        env = {**os.environ, 'AI_MEMORY_HOME': str(self.root), 'AI_MEMORY_CONFIG': str(Path(self.tmp.name) / 'none.json')}
+        return subprocess.run([sys.executable, str(BASE / 'hooks/memory-read.py')], input=raw if raw is not None else json.dumps(payload),
+                              env=env, text=True, capture_output=True, timeout=30)
+
+    def reads(self):
+        return [e for e in map(json_read, (self.memory.state / 'usage').glob('*.json')) if e.get('event') == 'read']
+
+    def test_read_of_a_linked_topic_page_strengthens_the_index_block(self):
+        old = '- [Old topic](topics/old.md) (2026-01-01) ' + 't' * 80 + '\n'
+        atomic(self.root / self.ctx / 'topics/old.md', 'x\n')
+        self.index(self.TOP + old + self.NEW, max(len(old), len(self.NEW)), [old, self.NEW])
+        self.assertEqual([d[1] for d in self.memory.rebalance(self.rel, reserve=0, dry_run=True)['demoted']], [old.strip()[:90]])
+        done = self.read_hook({'hook_event_name': 'PostToolUse', 'tool_name': 'Read', 'session_id': 's1', 'cwd': str(self.cwd),
+                               'tool_input': {'file_path': str(self.root / self.ctx / 'topics/old.md')}})
+        self.assertEqual((done.returncode, done.stdout), (0, ''))
+        self.assertEqual([(e['source'], e['store'] + '/context') for e in self.reads()], [(self.ctx + '/topics/old.md', self.ctx)])
+        self.assertEqual([d[1] for d in self.memory.rebalance(self.rel, reserve=0, dry_run=True)['demoted']], [self.NEW.strip()[:90]])
+
+    def test_read_weight_and_cross_project_read(self):
+        page = self.ctx + '/topics/p.md'
+        at = memory_core.now()
+        events = [{'event': 'read', 'source': page, 'session': 's', 'at': at, 'store': self.ctx[:-len('/context')]},
+                  {'event': 'read', 'source': page, 'session': 's', 'at': at, 'store': self.ctx[:-len('/context')]},  # same session, same page: once
+                  {'event': 'read', 'source': page, 'session': 's2', 'at': at, 'store': 'projects/other'},
+                  {'event': 'read', 'source': page, 'session': 's3', 'at': at},
+                  {'event': 'read', 'source': page, 'session': None, 'at': at},
+                  {'event': 'read', 'source': 'projects/other/context/topics/p.md', 'session': 's', 'at': at}]
+        matched, shown = self.memory._uses(self.ctx, events)
+        self.assertEqual([(h['own'], w) for h, t, w in shown], [(True, 2), (False, 4), (True, 2)])
+        self.memory.config['salience_read_weight'] = 3
+        self.assertEqual([w for h, t, w in self.memory._uses(self.ctx, events)[1]], [3, 6, 3])
+        # A read of the index or its cold file names no block: nothing to credit, and nothing breaks.
+        atomic(self.memory.path(self.rel), self.TOP + self.OLD)
+        self.memory.rebalance(self.rel, reserve=0, dry_run=True,
+                              events=[{'event': 'read', 'source': self.rel, 'session': 's', 'at': at},
+                                      {'event': 'read', 'source': self.cold, 'session': 's', 'at': at}])
+
+    def test_read_hook_logs_nothing_outside_curated_pages_and_never_fails(self):
+        base = {'hook_event_name': 'PostToolUse', 'tool_name': 'Read', 'session_id': 's1', 'cwd': str(self.cwd)}
+        for target in (Path(self.tmp.name) / 'elsewhere/context/x.md', self.root / self.ctx / 'transcripts/2026-01-01.md',
+                       self.root / self.ctx / 'checkpoints/a.md', self.root / self.ctx / 'MEMORY.json'):
+            atomic(target, 'x\n')
+            done = self.read_hook(dict(base, tool_input={'file_path': str(target)}))
+            self.assertEqual((done.returncode, done.stdout, done.stderr), (0, '', ''))
+        atomic(self.memory.path(self.rel), '# x\n')
+        self.read_hook(dict(base, session_id=None, tool_input={'file_path': str(self.root / self.rel)}))
+        self.assertEqual(self.reads(), [])
+        for raw in ('', 'not json', '[]', '{"tool_input": "x"}', '{"tool_input": {"file_path": 7}}'):
+            done = self.read_hook(None, raw)
+            self.assertEqual((done.returncode, done.stdout), (0, ''), raw)
+        self.read_hook(dict(base, tool_input={'file_path': str(self.root / self.rel)}))
+        self.assertEqual([e['source'] for e in self.reads()], [self.rel])
 
     def test_facts_pointer_in_cold_file_is_not_added_again(self):
         name = 'learned-' + __import__('datetime').date.today().strftime('%Y-%m') + '.md'

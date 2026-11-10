@@ -143,6 +143,16 @@ class Tests(unittest.TestCase):
         self.assertNotIn('inflight', state)
         self.assertEqual(state['pending'], [item])
 
+    def test_journal_status_finds_a_batch_moved_to_done_and_a_prepared_one(self):
+        batch = 'd' * 32
+        result = self.memory.apply({'version': VERSION, 'changes': [self.memory.change(
+            self.index, '# Working memory\n- old line\n- landed\n', 'append', '/save-hl ' + batch + ': r')]})
+        self.assertFalse((self.memory.state / 'journal' / (result['transaction'] + '.json')).exists())
+        self.assertEqual(save.journal_status(self.memory, batch), 'committed')
+        json_write(self.memory.state / 'journal/p.json', {'status': 'prepared', 'changes': [{'reason': '/save-hl ' + 'e' * 32 + ': r'}]})
+        self.assertEqual(save.journal_status(self.memory, 'e' * 32), 'prepared')
+        self.assertIsNone(save.journal_status(self.memory, 'f' * 32))
+
     def test_inflight_batch_never_journaled_rereads_the_turns(self):
         json_write(self.cursor, {'line': 0, 'inflight': {'to_line': 2, 'batch': 'c' * 32, 'pending': []}})
         save.settle_inflight(self.memory, self.cursor)

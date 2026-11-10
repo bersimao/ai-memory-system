@@ -53,7 +53,8 @@ a recent session): curation keeps a project index's strongest lines (fresh, reca
 recalled from another project counts double, or pinned with `mem pin RELATIVE_PATH "fragment"`)
 within cap - 300 and moves weak ones to `MEMORY-COLD.md` beside it: searched and recalled, not
 loaded at startup; a cold line used again comes back. `mem rebalance RELATIVE_PATH --dry-run` lists
-the moves.
+the moves. A pin is an inline `<!-- pin -->` on the block's first line (`mem pin`/`mem unpin` add or
+remove it), so it travels with the Markdown and survives edits; a lightly edited line keeps its use history.
 
 Lossless full-index archives stay beside the index, preserving existing relative link
 destinations. Ordinary topic pages stay in `topics/`.

@@ -64,7 +64,9 @@ class SemanticDaemonTests(unittest.TestCase):
         return thread
 
     def ask(self, prompt):
-        return hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': prompt, 'session_id': 's'})
+        # A fresh session per prompt: one session skips a page it was already shown (recall-seen).
+        return hooks.handle(self.memory, {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.cwd), 'prompt': prompt,
+                                          'session_id': __import__('uuid').uuid4().hex})
 
     def test_answer_validates_and_logs_an_expandable_search(self):
         with self.assertRaisesRegex(ValueError, 'invalid'):

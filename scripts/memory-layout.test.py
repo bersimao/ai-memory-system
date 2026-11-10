@@ -114,7 +114,7 @@ with tempfile.TemporaryDirectory() as tmp:
     applied = subprocess.run(mem + ['apply', str(tmp / 'p.json')], env=env, cwd=work, text=True, capture_output=True)
     check('split: apply works', applied.returncode == 0, applied.stderr)
     check('split: page written under home', (mem_home / rel).is_file())
-    check('split: journal under home/state', any((mem_home / 'state/journal').glob('*.json')))
+    check('split: journal under home/state', any((mem_home / 'state/journal').rglob('*.json')))
     found = subprocess.run(mem + ['search', 'gizmo flag OADM', '--scope', 'all', '--json'], env=env, cwd=work,
                            text=True, capture_output=True)
     hits = json.loads(found.stdout or '{}').get('results', []) if found.returncode == 0 else []

@@ -43,6 +43,18 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "env AI_MEMORY_HOME=\"$HOME/.claude\" python3 \"$HOME/.claude/hooks/memory-read.py\"",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

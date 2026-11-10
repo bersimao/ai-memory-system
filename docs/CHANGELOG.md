@@ -2,6 +2,45 @@
 
 Dates are when a change landed on `main`. Commit hashes are from this repo.
 
+## Unreleased (on `hmg`)
+
+**Upgrading** — what changes in behavior:
+- Committed journal records move to `state/journal/done/YYYY-MM/`; only records still being
+  written stay at the top level, so recovery no longer reads the whole journal on every write.
+  The first write after the upgrade moves the existing ones, under the writer lock.
+- Daily curation now also does retention: `done/` months older than `journal_retention_days`
+  (90) are deleted, and usage events older than `usage_loose_days` (14) are packed into
+  `state/usage/archive-YYYY-MM.jsonl`. Packed events still count for salience and `mem report`;
+  `mem expand` only resolves requests from the loose window.
+- A pin is now an inline `<!-- pin -->` marker on the line, written by `mem pin` and removed by
+  `mem unpin`. It travels with the Markdown between machines. A pin made before this (kept in
+  `state/salience.json`) still holds on the machine that made it.
+- A line edited lightly (similarity 0.8 or more) keeps its salience history; before, any edit
+  reset it and dropped its pin.
+- Automatic recall no longer injects a page it already injected in the same session, until a
+  compaction or a new session start. The recall event logs `repeats`.
+
+**Added**
+- `snapshot_global_index` (default `true`): set `false` to keep the global `context/MEMORY.md`
+  out of the startup snapshot. It stays searched and recalled.
+- A `read` usage event (`{event, source, session, store}`) counts for salience with weight
+  `salience_read_weight` (2). `hooks/memory-read.py` logs it: a `PostToolUse` hook on Claude Code's
+  `Read` tool, wired by `./install.sh` (re-run it) and shown in `settings.example.json`. Not wired for Codex.
+- `memory-maintain.py distill` ends with a report-only check: lines of the global index that look
+  owned by a skill with a `knowledge/` or `references/` dir go to `state/skill-flags.json` and
+  the alert channel. Nothing is moved. `memory-maintain.py flags` lists them,
+  `flags --dismiss "<fragment>"` keeps a line for good. One model call, only when the index changed.
+- The recall event logs `hybrid_miss` / `semantic_miss` (`not_running`, `timeout`, `error`) when
+  the vector leg did not answer.
+
+- `./install.sh` supports one shared instructions file: when the Claude Code file imports (`@path`
+  on its own line) a file that carries the memory block, it gets no block of its own, and one
+  written by an earlier install is removed. Before, every session loaded the block twice.
+
+**Fixed**
+- A daemon reply that was not a JSON object, or a daemon that failed to start, could raise out of
+  the prompt hook.
+
 ## 2026-11-09
 
 Update the same way as in the 2026-09-19 entry below (`git pull origin main`, then

@@ -196,7 +196,17 @@ def print_main(pending, fresh):
 def journal_status(memory, batch):
     """Status of the writer transaction carrying this batch id in its reasons, or None if never journaled."""
     tag = '/save-hl ' + batch + ':'
-    for journal in (memory.state / 'journal').glob('*.json'):
+    root = memory.state / 'journal'
+    # Committed records live in done/YYYY-MM/ (memory_core._settle): top level first, then the newest
+    # months; a raw substring test skips parsing the hundreds of MB that cannot hold the batch.
+    months = sorted((p for p in (root / 'done').glob('*') if p.is_dir()), reverse=True)
+    for journal in [*root.glob('*.json'), *(p for month in months for p in month.glob('*.json'))]:
+        try:
+            raw = journal.read_text(encoding='utf-8')
+        except OSError:
+            continue
+        if batch not in raw:
+            continue
         record = json_read(journal, {})
         if any(str(c.get('reason', '')).startswith(tag) for c in record.get('changes', [])):
             return record.get('status') or 'unknown'

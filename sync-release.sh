@@ -19,6 +19,7 @@ DST="$(cd "$(dirname "$0")" && pwd)"
 # The release surface. Anything not listed here does not ship.
 MANIFEST=(
   hooks/memory-lifecycle.py
+  hooks/memory-read.py
   scripts/memory_core.py
   scripts/memory_core.test.py
   scripts/memory-paths.py

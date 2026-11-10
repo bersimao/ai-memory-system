@@ -36,6 +36,44 @@ def instructions(old, body):
     return old.rstrip() + '\n\n' + block + '\n'
 
 
+def imported(path):
+    """Files a Claude Code instructions file imports with a whole-line `@path` (fenced code skipped):
+    `~` expanded, a relative path read from the file's own directory."""
+    if not path.exists():
+        return []
+    text = re.sub(r'(?ms)^```.*?^```[^\n]*$', '', path.read_text())
+    return [(path.parent / Path(raw).expanduser()).resolve() for raw in re.findall(r'(?m)^[ \t]*(?:-[ \t]+)?@(\S+)[ \t]*$', text)]
+
+
+def instruction_writes(root, codex, body):
+    """{target: bytes} for the instruction files. One shared file is a supported layout: when the
+    Claude Code file imports a file that carries the block (the Codex one, about to get it, or any
+    file that already has it), a block of its own would be loaded twice in every session. It then
+    gets none, and one written by an earlier install is taken out."""
+    writes = {}
+    agents = (codex / 'AGENTS.md') if codex else None
+    if agents:
+        writes[agents] = instructions(agents.read_text() if agents.exists() else '', body).encode()
+    claude = root / 'CLAUDE.md'
+    old = claude.read_text() if claude.exists() else ''
+    carried = False
+    for target in imported(claude):
+        if agents and target == agents.resolve():
+            carried = True
+        elif target.is_file() and BEGIN in target.read_text():
+            # The block lives in a file this install would not otherwise touch (a shared file, or the
+            # Codex one when it was not named): refresh it there, or an upgrade leaves the old text loaded.
+            carried = True
+            writes[target] = instructions(target.read_text(), body).encode()
+    if not carried:
+        writes[claude] = instructions(old, body).encode()
+    elif BEGIN in old:
+        if END not in old or old.index(END) < old.index(BEGIN):
+            raise ValueError('unclosed memory instructions')
+        writes[claude] = (old[:old.index(BEGIN)].rstrip() + '\n' + old[old.index(END) + len(END):].lstrip('\n')).encode()
+    return writes
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', default=os.environ.get('CLAUDE_HOME', str(Path.home() / '.claude')))
@@ -59,8 +97,7 @@ def main():
     body = (HERE / 'docs/memory-instructions.md').read_text().split('\n---\n', 1)[1].replace('~/.claude', str(root))
     skill = (HERE / 'skills/memory-write/SKILL.md').read_text().replace('~/.claude', str(root))
     writes = {root / name: (HERE / name).read_bytes() for name in manifest}
-    for target in [root / 'CLAUDE.md'] + ([codex / 'AGENTS.md'] if codex else []):
-        writes[target] = instructions(target.read_text() if target.exists() else '', body).encode()
+    writes.update(instruction_writes(root, codex, body))
     writes[root / 'skills/memory-write/SKILL.md'] = skill.encode()
     if codex:
         writes[codex / 'skills/memory/SKILL.md'] = skill.replace('name: memory-write', 'name: memory', 1).encode()
