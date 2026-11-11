@@ -110,6 +110,7 @@ bash scripts/skill-grep.test.sh         # grep -> mem -> section listing
 bash scripts/mem.test.sh                # weak-result retry warning
 bash cron/check-caps.test.sh            # per-store cap override + stderr silence
 node hooks/daily-log-nudge.test.js      # nudge: link hints, DST, emitted JSON
+bash release.test.sh                    # CHANGELOG / tag / GitHub Release drift
 ```
 
 Prefer mutation-testing a new case: break the guard on purpose and confirm the
@@ -149,3 +150,28 @@ that instructs the agent, because that is enforcement too.
   exist because something was silently lost once; keep that context.
 - Character caps are measured in **characters, not bytes** — accented text
   inflates byte counts and produces false alarms.
+
+## Releasing
+
+A release is three copies of one thing: a `## vX.Y.Z — YYYY-MM-DD` section in
+`docs/CHANGELOG.md`, an annotated git tag, and a GitHub Release. They drifted
+once (2026-11-11: the CHANGELOG had dates and no versions, v0.4.0 was tagged with
+no Release, the 2026-11-09 entry shipped with no tag), so `./release.sh` is the
+only path. Never run `git tag` or `gh release create` by hand.
+
+1. Work merges to `hmg` under `## Unreleased (on \`hmg\`)`.
+2. Merge `hmg` into `main`, rename that heading to `## vX.Y.Z — <date it lands on main>`
+   (minor for features or removals, patch for fixes only), commit, push `main`.
+3. `./release.sh cut vX.Y.Z` — on clean `main` equal to `origin/main`; tags the
+   section as an annotated tag. It does not push.
+4. `git push origin vX.Y.Z` (prompted, like every push).
+5. `./release.sh publish vX.Y.Z` — the Release, notes taken from the tagged
+   section, with `--verify-tag` so gh can never create the tag itself. It ends
+   with `./release.sh check`.
+
+`./release.sh check` fails on any drift: a heading that is not a release or
+`Unreleased`, a section with no tag, a tag with no section (v0.1.0 and v0.2.0
+predate the CHANGELOG and are listed as exempt), a tag missing or different on
+`origin`, a tag with no Release, or a "latest" Release that is not the highest
+tag. `--offline` checks only the CHANGELOG against local tags. Run it whenever
+you touch the CHANGELOG or a tag.

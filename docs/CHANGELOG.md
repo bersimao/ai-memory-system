@@ -1,10 +1,14 @@
 # Changelog
 
-Dates are when a change landed on `main`. Commit hashes are from this repo.
+Each release is a `## vX.Y.Z — YYYY-MM-DD` section. Its git tag and GitHub Release are
+cut from that section by `./release.sh` (see `CLAUDE.md`, "Releasing"); `./release.sh check`
+fails when the three disagree. Work merged to `hmg` but not released yet sits under
+`## Unreleased` at the top. Dated `###` headings inside a release are the days its changes
+landed on `main`. Commit hashes are from this repo.
 
-## 2026-11-09
+## v0.5.0 — 2026-11-09
 
-Update the same way as in the 2026-09-19 entry below (`git pull origin main`, then
+Update the same way as in the 2026-09-19 entry of v0.4.0 (`git pull origin main`, then
 `./install.sh` with `--dry-run` first).
 
 **Upgrading from an earlier install** — what changed in behavior:
@@ -60,7 +64,12 @@ Update the same way as in the 2026-09-19 entry below (`git pull origin main`, th
   now ends with ` (path)`, and created duplicate `<store> (path)` stores. It reads
   the resolver's JSON now. (`ed4a843`)
 
-## 2026-11-08
+## v0.4.0 — 2026-11-08
+
+Four deliveries that landed on `main` after v0.3.0 and were tagged together as v0.4.0.
+Apply their upgrade notes oldest first.
+
+### 2026-11-08
 
 Update the same way as in the 2026-09-19 entry below (`git pull origin main`, then
 `./install.sh` with `--dry-run` first).
@@ -94,7 +103,7 @@ Update the same way as in the 2026-09-19 entry below (`git pull origin main`, th
   `CLAUDE_ALERT_LOG` is set in your environment; its hub cases read the wrong file
   and failed.
 
-## 2026-11-01
+### 2026-11-01
 
 Update the same way as in the 2026-09-19 entry below (`git pull origin main`, then
 `./install.sh` with `--dry-run` first).
@@ -145,7 +154,7 @@ Update the same way as in the 2026-09-19 entry below (`git pull origin main`, th
 - The backfill log names why a summary was rejected, and the limit is 12000.
   (`38fca2f`)
 
-## 2026-10-12
+### 2026-10-12
 
 Update the same way as in the 2026-09-19 entry below (`git pull origin main`, then
 `./install.sh` with `--dry-run` first).
@@ -193,7 +202,7 @@ Update the same way as in the 2026-09-19 entry below (`git pull origin main`, th
 - `cron/memory-index.sh` exited non-zero on every run of a public install: it
   called two generators that do not ship. (`c74b611`)
 
-## 2026-09-19
+### 2026-09-19
 
 **How to update** (from the clone you installed from):
 
@@ -247,7 +256,7 @@ Codex sessions afterwards; in Codex, re-approve the hooks in `/hooks` if asked.
   have a log, and semantic-index pruning past the first 16,000 rows.
   (`d95d3fd`, `df68e88`, `e2290b3`, `f628fcc`, `340180b`)
 
-## 2026-09-10
+## v0.3.0 — 2026-09-10
 
 **Added**
 - Per-store cap override (`context/.cap`). One character cap for every project
@@ -279,3 +288,5 @@ Codex sessions afterwards; in Codex, re-approve the hooks in `/hooks` if asked.
 
 See `git log` for full commit messages — each documents the specific failure
 it fixes and how it was verified.
+
+v0.1.0 and v0.2.0 predate this file; their notes are on their GitHub Releases.
