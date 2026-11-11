@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/works%20with-Claude%20Code-d97757" alt="Works with Claude Code">
   <img src="https://img.shields.io/badge/shared%20with-Codex-10a37f" alt="Shared with Codex">
   <img src="https://img.shields.io/badge/storage-markdown%20only-8b5cf6" alt="Storage: markdown only">
-  <img src="https://img.shields.io/badge/tests-20%20suites-22c55e" alt="Tests: 20 suites">
+  <img src="https://img.shields.io/badge/tests-21%20suites-22c55e" alt="Tests: 21 suites">
   <img src="https://img.shields.io/badge/runs%20on-python3%20·%20node%20·%20bash-64748b" alt="Runs on python3, node, bash">
 </p>
 
@@ -219,6 +219,7 @@ python3 scripts/memory_core.test.py
 python3 scripts/memory-save.test.py
 python3 install-memory.test.py
 bash sync-release.test.sh
+bash release.test.sh
 bash scripts/skill-grep.test.sh
 python3 cron/jsonl-to-transcript.test.py
 node hooks/project-store.test.js
@@ -238,7 +239,7 @@ the quick set.
 - [Split layout](docs/split-layout.md): memory outside `~/.claude`.
 - [Runtime design](docs/model-agnostic.md): what is portable to another model or CLI.
 - [Cross-language retrieval](docs/cross-language-retrieval.md): why a miss is not proof.
-- [Changelog](docs/CHANGELOG.md) (on `main`).
+- [Changelog](docs/CHANGELOG.md) (on `main`); releases are cut from it by `./release.sh`.
 
 ## License
 

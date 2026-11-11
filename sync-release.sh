@@ -113,7 +113,7 @@ if [ "$mode" = --from-home ]; then
   # Scan the ENTIRE release surface, this script included — not just the code
   # dirs. README and the example configs ship too, and can leak just as well.
   scan=()
-  for rel in "${MANIFEST[@]}" "${EXTRA_SCAN[@]}" sync-release.sh sync-release.test.sh \
+  for rel in "${MANIFEST[@]}" "${EXTRA_SCAN[@]}" sync-release.sh sync-release.test.sh release.sh release.test.sh \
              install.sh install.test.sh README.md CLAUDE.md settings.example.json \
              data/memory.env.example .gitignore; do
     [ -f "$DST/$rel" ] && scan+=("$DST/$rel")
